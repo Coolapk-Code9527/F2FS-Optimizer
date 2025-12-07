@@ -1,7 +1,7 @@
 {
   "name": "F2FS-Optimizer",
   "version": "1.0.4-Beta",
-  "versionCode": 4,
+  "versionCode": 5,
   "url": "https://github.com/Coolapk-Code9527/F2FS-Optimizer/releases/download/v1.0.4-beta/F2FS-Optimizer-v1.0.4-Beta.zip",
   "changelog": "修复已知问题。",
 }
