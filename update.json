@@ -1,1 +1,8 @@
- { "name": "F2FS-Optimizer", "version": "1.0.5-Beta", "versionCode": 6, "url": "https://github.com/Coolapk-Code9527/F2FS-Optimizer/releases/download/v1.0.5-beta/F2FS-Optimizer-v1.0.5-Beta.zip", "changelog": "https://raw.githubusercontent.com/Coolapk-Code9527/F2FS-Optimizer/main/CHANGELOG.md" }
+{
+  "name": "F2FS-Optimizer",
+  "version": "1.0.4-Beta",
+  "versionCode": 5,
+  "url": "https://github.com/Coolapk-Code9527/F2FS-Optimizer/releases/download/v1.0.4-beta/F2FS-Optimizer-v1.0.4-Beta.zip",
+  "changelog": "https://raw.githubusercontent.com/Coolapk-Code9527/F2FS-Optimizer/main/README.md",
+  "timestamp": 1700000000
+}
