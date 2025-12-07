@@ -1,7 +1,7 @@
 id=f2fs_optimizer
 name=F2FS-Optimizer
 version=V1.04Beta
-versionCode=1
+versionCode=5
 author=乄代号9527
 description=[等待启用]⏳定时F2FS清理回收♻️优化模块。基于纯 Shell 脚本实现，通过深度 Trim 和 F2FS 垃圾回收 (GC) 提升长期读写性能。
 updateJson=https://raw.githubusercontent.com/Coolapk-Code9527/F2FS-Optimizer/main/update.json
