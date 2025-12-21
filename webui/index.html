@@ -1,1 +1,2181 @@
-1
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>F2FS-Optimizer - Web UI</title>
+<style>
+/* ===== macOS 风格基础样式 ===== */
+:root {
+  --bg-primary: #f5f5f7;
+  --bg-card: rgba(255,255,255,0.72);
+  --bg-input: rgba(255,255,255,0.9);
+  --text-primary: #1d1d1f;
+  --text-secondary: #86868b;
+  --text-tertiary: #6e6e73;
+  --border-color: rgba(0,0,0,0.1);
+  --accent: #007AFF;
+  --accent-hover: #0056b3;
+  --success: #34C759;
+  --warning: #FF9500;
+  --danger: #FF3B30;
+  --shadow: 0 4px 24px rgba(0,0,0,0.08);
+  --shadow-hover: 0 8px 32px rgba(0,0,0,0.12);
+  --blur: blur(20px);
+  --radius-lg: 12px;
+  --radius-md: 8px;
+  --radius-sm: 6px;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 14px;
+  --font-size-md: 15px;
+  --font-size-lg: 17px;
+  --font-size-xl: 22px;
+  --font-size-2xl: 28px;
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.75;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 20px;
+  --spacing-2xl: 24px;
+  --spacing-3xl: 28px;
+  --icon-size-sm: 16px;
+  --icon-size-md: 20px;
+  --icon-size-lg: 24px;
+  --card-gap: 24px;
+  --transition-fast: 0.15s;
+  --transition-normal: 0.3s;
+  --transition-slow: 0.5s;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-primary: #1d1d1f;
+    --bg-card: rgba(44,44,46,0.72);
+    --bg-input: rgba(58,58,60,0.9);
+    --text-primary: #f5f5f7;
+    --text-secondary: #98989d;
+    --text-tertiary: #8e8e93;
+    --border-color: rgba(255,255,255,0.1);
+    --shadow: 0 4px 24px rgba(0,0,0,0.3);
+    --shadow-hover: 0 8px 32px rgba(0,0,0,0.4);
+  }
+}
+
+/* 主题切换平滑过渡 */
+*{
+  margin:0;
+  padding:0;
+  box-sizing:border-box;
+  transition:background-color var(--transition-normal) ease,
+             color var(--transition-normal) ease,
+             border-color var(--transition-normal) ease;
+}
+
+/* 排除不需要过渡的元素 */
+*:where(button, input, select, .toggle::after, .status-spinner) {
+  transition:all var(--transition-normal) ease;
+}
+
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Helvetica Neue",sans-serif;
+  background:var(--bg-primary);
+  color:var(--text-primary);
+  padding:var(--spacing-xl);
+  font-size:var(--font-size-base);
+  line-height:var(--line-height-normal);
+  font-weight:var(--font-weight-normal);
+  -webkit-font-smoothing:antialiased;
+}
+.container{max-width:900px;margin:0 auto}
+
+/* ===== 毛玻璃卡片 ===== */
+.card{
+  background:var(--bg-card);
+  backdrop-filter:var(--blur);
+  -webkit-backdrop-filter:var(--blur);
+  border-radius:var(--radius-lg);
+  border:1px solid var(--border-color);
+  padding:var(--spacing-2xl) var(--spacing-3xl);
+  margin-bottom:var(--card-gap);
+  box-shadow:var(--shadow);
+  transition:transform 0.2s ease,box-shadow 0.2s ease;
+}
+.card:hover{
+  transform:translateY(-4px);
+  box-shadow:0 12px 40px rgba(0,0,0,0.15);
+}
+
+/* 卡片变体 - 带标识色边框 */
+.card-accent {
+  border-left:4px solid var(--accent);
+}
+
+.card-success {
+  border-left:4px solid var(--success);
+}
+
+.card-warning {
+  border-left:4px solid var(--warning);
+}
+
+@media (prefers-color-scheme: dark) {
+  .card:hover{
+    box-shadow:0 12px 40px rgba(0,0,0,0.4);
+  }
+}
+
+/* ===== 标题样式 ===== */
+h1{
+  font-size:var(--font-size-2xl);
+  font-weight:var(--font-weight-semibold);
+  line-height:var(--line-height-tight);
+  margin-bottom:var(--spacing-sm);
+  letter-spacing:-0.5px;
+}
+h2{
+  font-size:20px;
+  font-weight:600;
+  line-height:var(--line-height-tight);
+  margin-bottom:24px;
+  color:var(--text-primary);
+  display:flex;
+  align-items:center;
+  gap:12px;
+  padding:12px 16px;
+  margin-left:-16px;
+  margin-right:-16px;
+  border-radius:var(--radius-md);
+  background:rgba(0,122,255,0.05);
+}
+h2 .icon{
+  color:var(--accent);
+  width:var(--icon-size-lg);
+  height:var(--icon-size-lg);
+  flex-shrink:0;
+}
+
+/* 标题变体 - 不同颜色 */
+.card-success h2{
+  background:rgba(52,199,89,0.05);
+}
+.card-success h2 .icon{
+  color:var(--success);
+}
+
+@media (prefers-color-scheme: dark) {
+  h2{
+    background:rgba(0,122,255,0.08);
+  }
+  .card-success h2{
+    background:rgba(52,199,89,0.08);
+  }
+}
+
+/* ===== 状态徽章 ===== */
+.status-badge{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:6px 14px;
+  border-radius:20px;
+  font-size:13px;
+  font-weight:500;
+  background:rgba(134,134,139,0.12);
+  color:var(--text-secondary);
+}
+.status-badge.running{background:rgba(52,199,89,0.15);color:var(--success)}
+.status-badge.stopped{background:rgba(255,59,48,0.15);color:var(--danger)}
+.status-badge .icon{
+  width:16px;
+  height:16px;
+}
+
+/* ===== 状态网格 ===== */
+.status-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+  gap:12px;
+  margin-top:16px;
+}
+.status-item{
+  background:var(--bg-input);
+  padding:16px;
+  border-radius:var(--radius-md);
+  border:1px solid var(--border-color);
+  transition:transform 0.15s ease;
+}
+.status-item:hover{transform:scale(1.02)}
+.status-label{font-size:12px;color:var(--text-tertiary);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px}
+.status-value{font-size:15px;font-weight:500;color:var(--text-primary)}
+
+/* ===== 表单样式 ===== */
+.form-group{margin-bottom:var(--spacing-xl)}
+.form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:var(--spacing-xl)}
+label{
+  display:block;
+  margin-bottom:var(--spacing-sm);
+  color:var(--text-secondary);
+  font-size:var(--font-size-sm);
+  font-weight:var(--font-weight-medium);
+}
+input[type="text"],input[type="number"],select{
+  width:100%;
+  height:44px;
+  padding:10px 14px;
+  background:var(--bg-input);
+  border:1px solid var(--border-color);
+  border-radius:var(--radius-md);
+  color:var(--text-primary);
+  font-size:15px;
+  transition:border-color var(--transition-normal),box-shadow var(--transition-normal),transform var(--transition-fast);
+  -webkit-appearance:none;
+  appearance:none;
+}
+input:focus,select:focus{
+  outline:none;
+  border-color:var(--accent);
+  box-shadow:0 0 0 4px rgba(0,122,255,0.15);
+  transform:translateY(-1px);
+}
+input.error,select.error{
+  border-color:var(--danger);
+  box-shadow:0 0 0 4px rgba(255,59,48,0.1);
+}
+select{
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2386868b' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;
+  background-position:right 14px center;
+  padding-right:36px;
+  cursor:pointer;
+}
+.help-text{
+  font-size:var(--font-size-sm);
+  color:var(--text-tertiary);
+  margin-top:6px;
+  line-height:var(--line-height-normal);
+}
+.error-text{
+  font-size:var(--font-size-sm);
+  color:var(--danger);
+  margin-top:6px;
+  display:none;
+  font-weight:var(--font-weight-medium);
+}
+.error-text.show{display:block}
+
+/* ===== macOS 风格开关 ===== */
+.toggle-group{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border-color)}
+.toggle-group:last-child{border-bottom:none}
+.toggle-info{flex:1}
+.toggle-label{font-size:15px;font-weight:500;color:var(--text-primary);margin-bottom:2px}
+.toggle-desc{font-size:12px;color:var(--text-tertiary)}
+.toggle{
+  position:relative;
+  width:51px;
+  height:31px;
+  background:#e9e9eb;
+  border-radius:15.5px;
+  cursor:pointer;
+  transition:background var(--transition-normal) ease;
+  flex-shrink:0;
+}
+@media (prefers-color-scheme: dark) {
+  .toggle{background:#39393d}
+}
+.toggle.active{background:var(--success)}
+.toggle::after{
+  content:'';
+  position:absolute;
+  top:2px;
+  left:2px;
+  width:27px;
+  height:27px;
+  background:#fff;
+  border-radius:50%;
+  box-shadow:0 3px 8px rgba(0,0,0,0.15),0 1px 1px rgba(0,0,0,0.06);
+  transition:transform var(--transition-normal) cubic-bezier(0.4, 0.0, 0.2, 1);
+}
+.toggle.active::after{transform:translateX(20px)}
+.toggle:hover::after{
+  box-shadow:0 4px 12px rgba(0,0,0,0.2),0 2px 4px rgba(0,0,0,0.1);
+}
+
+/* ===== 按钮样式 ===== */
+.button-group{display:flex;flex-wrap:wrap;gap:var(--spacing-md);margin-top:var(--spacing-md)}
+button{
+  min-width:120px;
+  height:44px;
+  padding:12px 24px;
+  background:var(--accent);
+  color:#fff;
+  border:none;
+  border-radius:var(--radius-md);
+  cursor:pointer;
+  font-size:14px;
+  font-weight:500;
+  transition:all var(--transition-normal) ease;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  position:relative;
+  overflow:hidden;
+}
+button:hover{
+  background:var(--accent-hover);
+  transform:translateY(-2px);
+  box-shadow:0 4px 12px rgba(0,122,255,0.3);
+}
+button:active{
+  transform:translateY(0) scale(0.98);
+}
+button:disabled{
+  opacity:0.5;
+  cursor:not-allowed;
+  transform:none;
+  box-shadow:none;
+}
+button.secondary{
+  background:var(--bg-input);
+  color:var(--text-primary);
+  border:1px solid var(--border-color);
+}
+button.secondary:hover{
+  background:var(--border-color);
+  box-shadow:0 4px 12px rgba(0,0,0,0.1);
+}
+button.danger{background:var(--danger)}
+button.danger:hover{
+  background:#e0312b;
+  box-shadow:0 4px 12px rgba(255,59,48,0.3);
+}
+button.success{background:var(--success)}
+button.success:hover{
+  background:#2db84e;
+  box-shadow:0 4px 12px rgba(52,199,89,0.3);
+}
+button.loading{
+  pointer-events:none;
+  opacity:0.7;
+}
+button.loading::after{
+  content:'';
+  position:absolute;
+  width:16px;
+  height:16px;
+  top:50%;
+  left:50%;
+  margin-left:-8px;
+  margin-top:-8px;
+  border:2px solid transparent;
+  border-top-color:currentColor;
+  border-radius:50%;
+  animation:button-loading-spinner 0.6s linear infinite;
+}
+@keyframes button-loading-spinner{
+  from{transform:rotate(0deg)}
+  to{transform:rotate(360deg)}
+}
+
+@media (prefers-color-scheme: dark) {
+  button.secondary:hover{
+    box-shadow:0 4px 12px rgba(255,255,255,0.1);
+  }
+}
+
+/* ===== 操作项 ===== */
+.action-item{
+  display:flex;
+  align-items:center;
+  gap:16px;
+  padding:14px 0;
+  border-bottom:1px solid var(--border-color);
+}
+.action-item:last-child{border-bottom:none}
+.action-item button{min-width:130px;justify-content:center}
+.action-desc{font-size:13px;color:var(--text-tertiary);flex:1}
+
+/* ===== 日志框 ===== */
+.log-box{
+  background:var(--bg-input);
+  padding:16px;
+  border-radius:var(--radius-md);
+  height:350px;
+  overflow-y:auto;
+  font-family:"SF Mono","Monaco","Menlo",monospace;
+  font-size:12px;
+  line-height:1.8;
+  white-space:pre-wrap;
+  word-break:break-all;
+  border:1px solid var(--border-color);
+  color:var(--text-primary);
+}
+.log-box::-webkit-scrollbar{width:8px}
+.log-box::-webkit-scrollbar-track{background:transparent}
+.log-box::-webkit-scrollbar-thumb{background:var(--border-color);border-radius:4px}
+
+/* 日志语法高亮 */
+.log-timestamp{
+  color:var(--text-tertiary);
+  font-weight:500;
+}
+.log-level-info{
+  color:var(--accent);
+  font-weight:500;
+}
+.log-level-warn{
+  color:var(--warning);
+  font-weight:600;
+}
+.log-level-error{
+  color:var(--danger);
+  font-weight:600;
+}
+.log-success{
+  color:var(--success);
+  font-weight:500;
+}
+
+/* ===== Toast 通知 ===== */
+.toast{
+  position:fixed;
+  top:20px;
+  right:20px;
+  background:var(--bg-card);
+  backdrop-filter:var(--blur);
+  -webkit-backdrop-filter:var(--blur);
+  color:var(--text-primary);
+  padding:14px 20px;
+  border-radius:var(--radius-md);
+  border:1px solid var(--border-color);
+  box-shadow:var(--shadow-hover);
+  opacity:0;
+  transform:translateY(-10px);
+  transition:all 0.3s ease;
+  z-index:1000;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  max-width:360px;
+  cursor:pointer;
+}
+.toast.show{opacity:1;transform:translateY(0)}
+.toast.success{border-left:4px solid var(--success)}
+.toast.error{border-left:4px solid var(--danger)}
+.toast-icon{
+  font-size:18px;
+  flex-shrink:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+@media (max-width:600px){
+  .toast{top:10px;right:10px;left:10px;max-width:none}
+}
+
+/* ===== 分组标题 ===== */
+.section-title{
+  font-size:13px;
+  font-weight:600;
+  color:var(--text-primary);
+  text-transform:uppercase;
+  letter-spacing:0.8px;
+  margin:28px 0 16px;
+  padding:8px 12px;
+  background:rgba(0,122,255,0.08);
+  border-radius:6px;
+  border-left:3px solid var(--accent);
+}
+.section-title:first-child{margin-top:0}
+
+@media (prefers-color-scheme: dark) {
+  .section-title{
+    background:rgba(0,122,255,0.12);
+  }
+}
+
+/* ===== Cron 快捷选择 ===== */
+.cron-presets{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.cron-preset{
+  padding:8px 14px;
+  background:var(--bg-input);
+  border:1px solid var(--border-color);
+  border-radius:var(--radius-sm);
+  font-size:12px;
+  color:var(--text-secondary);
+  cursor:pointer;
+  transition:all var(--transition-fast) ease;
+  display:inline-flex;
+  align-items:center;
+  font-weight:500;
+}
+.cron-preset:hover{
+  border-color:var(--accent);
+  color:var(--accent);
+  background:rgba(0,122,255,0.05);
+  transform:translateY(-1px);
+}
+.cron-preset:active{
+  transform:translateY(0) scale(0.98);
+}
+.cron-preview{
+  font-size:12px;
+  color:var(--success);
+  margin-top:6px;
+  display:none;
+  font-weight:500;
+}
+.cron-preview.show{display:block}
+
+/* ===== 响应式 ===== */
+@media (max-width:600px){
+  :root{
+    --font-size-2xl:var(--font-size-xl);
+    --font-size-xl:18px;
+    --font-size-lg:16px;
+  }
+  body{padding:var(--spacing-md)}
+  .card{
+    padding:var(--spacing-lg) var(--spacing-xl);
+    margin-bottom:var(--spacing-lg);
+  }
+  .form-row{grid-template-columns:1fr}
+  .button-group{flex-direction:column}
+  .button-group button{
+    width:100%;
+    min-height:44px;
+  }
+  .action-item{
+    flex-direction:column;
+    align-items:stretch;
+    gap:var(--spacing-md);
+    padding:var(--spacing-lg) 0;
+  }
+  .action-item button{
+    width:100%;
+    min-width:auto;
+    min-height:44px;
+  }
+  .action-desc{text-align:center}
+  .toggle-group{
+    flex-wrap:wrap;
+    gap:var(--spacing-md);
+    padding:var(--spacing-lg) 0;
+  }
+  .toggle{
+    min-width:51px;
+    min-height:31px;
+  }
+  .cron-presets{justify-content:center}
+  .cron-preset{
+    min-height:36px;
+    padding:8px 14px;
+  }
+  /* 确保输入框触摸目标足够大 */
+  input[type="text"],
+  input[type="number"],
+  select{
+    min-height:44px;
+  }
+  /* 移动端隐藏悬停效果 */
+  .card:hover{
+    transform:none;
+  }
+  button:hover{
+    transform:none;
+  }
+  /* 优化移动端间距 */
+  h2{
+    font-size:18px;
+    margin-bottom:var(--spacing-lg);
+  }
+  .section-title{
+    margin:var(--spacing-lg) 0 var(--spacing-md);
+  }
+}
+
+/* ===== 配置状态提示框 ===== */
+.alert-box{
+  display:flex;
+  align-items:flex-start;
+  gap:var(--spacing-md);
+  padding:var(--spacing-lg);
+  margin-top:var(--spacing-lg);
+  background:rgba(255,149,0,0.1);
+  border:1px solid rgba(255,149,0,0.3);
+  border-radius:var(--radius-md);
+  border-left:4px solid var(--warning);
+}
+.alert-icon{
+  font-size:var(--font-size-xl);
+  line-height:1;
+  width:24px;
+  height:24px;
+  flex-shrink:0;
+}
+.alert-content{
+  flex:1;
+}
+.alert-title{
+  font-size:var(--font-size-md);
+  font-weight:var(--font-weight-semibold);
+  margin-bottom:var(--spacing-xs);
+}
+.alert-message{
+  font-size:var(--font-size-sm);
+  color:var(--text-secondary);
+  margin-bottom:var(--spacing-sm);
+}
+.alert-box.info{
+  background:rgba(0,122,255,0.1);
+  border-color:rgba(0,122,255,0.3);
+  border-left-color:var(--accent);
+}
+.alert-box.success{
+  background:rgba(52,199,89,0.1);
+  border-color:rgba(52,199,89,0.3);
+  border-left-color:var(--success);
+}
+.alert-box.error{
+  background:rgba(255,59,48,0.1);
+  border-color:rgba(255,59,48,0.3);
+  border-left-color:var(--danger);
+}
+.btn-link{
+  background:none;
+  border:none;
+  color:var(--accent);
+  font-size:var(--font-size-sm);
+  font-weight:var(--font-weight-medium);
+  cursor:pointer;
+  padding:0;
+  text-decoration:underline;
+  transition:color var(--transition-fast);
+}
+.btn-link:hover{
+  color:var(--accent-hover);
+}
+
+/* ===== 执行进度模态框 ===== */
+.modal-overlay{
+  position:fixed;
+  top:0;
+  left:0;
+  right:0;
+  bottom:0;
+  background:rgba(0,0,0,0.5);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  z-index:1000;
+  backdrop-filter:blur(4px);
+  -webkit-backdrop-filter:blur(4px);
+  animation:modalFadeIn var(--transition-normal) ease-out;
+}
+.modal-content{
+  background:var(--bg-card);
+  backdrop-filter:var(--blur);
+  -webkit-backdrop-filter:var(--blur);
+  border-radius:var(--radius-lg);
+  border:1px solid var(--border-color);
+  padding:var(--spacing-3xl);
+  max-width:600px;
+  width:90%;
+  max-height:80vh;
+  overflow-y:auto;
+  box-shadow:var(--shadow-hover);
+  animation:modalSlideIn var(--transition-normal) ease-out;
+}
+
+@keyframes modalFadeIn{
+  from{
+    opacity:0;
+  }
+  to{
+    opacity:1;
+  }
+}
+
+@keyframes modalSlideIn{
+  from{
+    opacity:0;
+    transform:translateY(-20px) scale(0.95);
+  }
+  to{
+    opacity:1;
+    transform:translateY(0) scale(1);
+  }
+}
+
+.modal-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  margin-bottom:var(--spacing-lg);
+}
+.modal-title{
+  font-size:var(--font-size-lg);
+  font-weight:var(--font-weight-semibold);
+}
+.modal-close{
+  background:none;
+  border:none;
+  font-size:var(--font-size-xl);
+  color:var(--text-secondary);
+  cursor:pointer;
+  padding:0;
+  width:32px;
+  height:32px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:50%;
+  transition:background var(--transition-fast) ease;
+}
+.modal-close:hover{
+  background:var(--border-color);
+}
+.execution-log{
+  background:var(--bg-input);
+  border:1px solid var(--border-color);
+  border-radius:var(--radius-md);
+  padding:var(--spacing-md);
+  font-family:'SF Mono',Monaco,Consolas,monospace;
+  font-size:var(--font-size-xs);
+  line-height:var(--line-height-relaxed);
+  max-height:400px;
+  overflow-y:auto;
+  white-space:pre-wrap;
+  word-break:break-all;
+}
+.execution-status{
+  display:flex;
+  align-items:center;
+  gap:var(--spacing-sm);
+  padding:var(--spacing-md);
+  margin-bottom:var(--spacing-lg);
+  background:var(--bg-input);
+  border-radius:var(--radius-md);
+}
+.status-spinner{
+  width:20px;
+  height:20px;
+  border:2px solid var(--border-color);
+  border-top-color:var(--accent);
+  border-radius:50%;
+  animation:spin 1s linear infinite;
+}
+@keyframes spin{
+  to{transform:rotate(360deg)}
+}
+.status-icon{
+  font-size:var(--font-size-lg);
+  width:24px;
+  height:24px;
+}
+.status-icon{
+  font-size:var(--font-size-lg);
+}
+.status-text{
+  flex:1;
+  font-size:var(--font-size-sm);
+  color:var(--text-secondary);
+}
+
+/* ===== SVG 图标系统 ===== */
+.icon {
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.icon-small { 
+  width: var(--icon-size-sm); 
+  height: var(--icon-size-sm); 
+}
+
+.icon-medium { 
+  width: var(--icon-size-md); 
+  height: var(--icon-size-md); 
+}
+
+.icon-large { 
+  width: var(--icon-size-lg); 
+  height: var(--icon-size-lg); 
+}
+</style>
+</head>
+<body>
+<!-- SVG 图标库 -->
+<svg style="display:none" aria-hidden="true">
+  <defs>
+    <!-- 保存图标 -->
+    <symbol id="icon-save" viewBox="0 0 24 24">
+      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+      <polyline points="17 21 17 13 7 13 7 21"/>
+      <polyline points="7 3 7 8 15 8"/>
+    </symbol>
+    
+    <!-- 重新加载图标 -->
+    <symbol id="icon-reload" viewBox="0 0 24 24">
+      <polyline points="23 4 23 10 17 10"/>
+      <polyline points="1 20 1 14 7 14"/>
+      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+    </symbol>
+    
+    <!-- 播放图标 -->
+    <symbol id="icon-play" viewBox="0 0 24 24">
+      <polygon points="5 3 19 12 5 21 5 3"/>
+    </symbol>
+    
+    <!-- 重启图标 -->
+    <symbol id="icon-restart" viewBox="0 0 24 24">
+      <polyline points="1 4 1 10 7 10"/>
+      <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+    </symbol>
+    
+    <!-- 刷新图标 -->
+    <symbol id="icon-refresh" viewBox="0 0 24 24">
+      <polyline points="23 4 23 10 17 10"/>
+      <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+    </symbol>
+    
+    <!-- 删除图标 -->
+    <symbol id="icon-delete" viewBox="0 0 24 24">
+      <polyline points="3 6 5 6 21 6"/>
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+      <line x1="10" y1="11" x2="10" y2="17"/>
+      <line x1="14" y1="11" x2="14" y2="17"/>
+    </symbol>
+    
+    <!-- 暂停图标 -->
+    <symbol id="icon-pause" viewBox="0 0 24 24">
+      <rect x="6" y="4" width="4" height="16"/>
+      <rect x="14" y="4" width="4" height="16"/>
+    </symbol>
+    
+    <!-- 关闭图标 -->
+    <symbol id="icon-close" viewBox="0 0 24 24">
+      <line x1="18" y1="6" x2="6" y2="18"/>
+      <line x1="6" y1="6" x2="18" y2="18"/>
+    </symbol>
+    
+    <!-- 取消图标 -->
+    <symbol id="icon-cancel" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="10"/>
+      <line x1="15" y1="9" x2="9" y2="15"/>
+      <line x1="9" y1="9" x2="15" y2="15"/>
+    </symbol>
+    
+    <!-- 成功/对勾圆圈图标 -->
+    <symbol id="icon-check-circle" viewBox="0 0 24 24">
+      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+      <polyline points="22 4 12 14.01 9 11.01"/>
+    </symbol>
+    
+    <!-- 错误/X圆圈图标 -->
+    <symbol id="icon-x-circle" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="10"/>
+      <line x1="15" y1="9" x2="9" y2="15"/>
+      <line x1="9" y1="9" x2="15" y2="15"/>
+    </symbol>
+    
+    <!-- 警告/三角形图标 -->
+    <symbol id="icon-alert-triangle" viewBox="0 0 24 24">
+      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+      <line x1="12" y1="9" x2="12" y2="13"/>
+      <line x1="12" y1="17" x2="12.01" y2="17"/>
+    </symbol>
+    
+    <!-- 信息圆圈图标 -->
+    <symbol id="icon-info-circle" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="10"/>
+      <line x1="12" y1="16" x2="12" y2="12"/>
+      <line x1="12" y1="8" x2="12.01" y2="8"/>
+    </symbol>
+    
+    <!-- 活动/运行图标 -->
+    <symbol id="icon-activity" viewBox="0 0 24 24">
+      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+    </symbol>
+    
+    <!-- 圆圈图标 -->
+    <symbol id="icon-circle" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="10"/>
+    </symbol>
+    
+    <!-- 下拉箭头图标 -->
+    <symbol id="icon-chevron-down" viewBox="0 0 24 24">
+      <polyline points="6 9 12 15 18 9"/>
+    </symbol>
+    
+    <!-- 设置图标 -->
+    <symbol id="icon-settings" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+    </symbol>
+    
+    <!-- 文件文本/日志图标 -->
+    <symbol id="icon-file-text" viewBox="0 0 24 24">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+      <polyline points="14 2 14 8 20 8"/>
+      <line x1="16" y1="13" x2="8" y2="13"/>
+      <line x1="16" y1="17" x2="8" y2="17"/>
+      <polyline points="10 9 9 9 8 9"/>
+    </symbol>
+    
+    <!-- 时钟图标 -->
+    <symbol id="icon-clock" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="10"/>
+      <polyline points="12 6 12 12 16 14"/>
+    </symbol>
+    
+    <!-- 数据库图标 -->
+    <symbol id="icon-database" viewBox="0 0 24 24">
+      <ellipse cx="12" cy="5" rx="9" ry="3"/>
+      <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+      <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+    </symbol>
+  </defs>
+</svg>
+
+<div class="container">
+<!-- 状态概览卡片 -->
+<div class="card">
+<h1>F2FS-Optimizer</h1>
+<span class="status-badge" id="statusBadge">加载中</span>
+<div class="status-grid">
+<div class="status-item">
+<div class="status-label">服务状态</div>
+<div class="status-value" id="serviceStatus">加载中...</div>
+</div>
+<div class="status-item">
+<div class="status-label">最后运行</div>
+<div class="status-value" id="lastRun">加载中...</div>
+</div>
+<div class="status-item">
+<div class="status-label">日志大小</div>
+<div class="status-value" id="logSize">加载中...</div>
+</div>
+<div class="status-item">
+<div class="status-label">配置状态</div>
+<div class="status-value" id="configStatus">加载中...</div>
+</div>
+<div class="status-item">
+<div class="status-label">下次执行</div>
+<div class="status-value" id="nextRun">加载中...</div>
+</div>
+</div>
+<!-- 配置待生效提示 -->
+<div id="pendingChangesAlert" class="alert-box" style="display:none">
+<div class="alert-icon"><svg class="icon icon-large" style="stroke:var(--warning)"><use href="#icon-alert-triangle"/></svg></div>
+<div class="alert-content">
+<div class="alert-title">配置待生效</div>
+<div class="alert-message" id="pendingChangesMessage"></div>
+<button class="btn-link" onclick="triggerImmediateExecution()">立即应用配置</button>
+</div>
+</div>
+</div>
+
+<!-- 调度器配置 -->
+<div class="card card-accent">
+<h2><svg class="icon icon-large"><use href="#icon-settings"/></svg>调度器配置</h2>
+<form id="configForm">
+<div class="form-row">
+<div class="form-group">
+<label>调度模式</label>
+<select id="scheduleMode">
+<option value="sleep">Sleep - 循环休眠</option>
+<option value="cron">Cron - 精准调度</option>
+</select>
+</div>
+<div class="form-group">
+<label>日志级别</label>
+<select id="logMode">
+<option value="INFO">INFO</option>
+<option value="DEBUG">DEBUG</option>
+<option value="NONE">关闭</option>
+</select>
+</div>
+</div>
+<div class="form-group">
+<label>Cron 表达式</label>
+<input type="text" id="cronExp" placeholder="0 */4 * * *" oninput="validateCron()">
+<div class="cron-presets">
+<span class="cron-preset" onclick="setCron('0 */4 * * *')"><svg class="icon" style="width:14px;height:14px;margin-right:4px"><use href="#icon-clock"/></svg>每4小时</span>
+<span class="cron-preset" onclick="setCron('0 */6 * * *')"><svg class="icon" style="width:14px;height:14px;margin-right:4px"><use href="#icon-clock"/></svg>每6小时</span>
+<span class="cron-preset" onclick="setCron('0 3 * * *')"><svg class="icon" style="width:14px;height:14px;margin-right:4px"><use href="#icon-clock"/></svg>每天3点</span>
+<span class="cron-preset" onclick="setCron('0 2 * * 0')"><svg class="icon" style="width:14px;height:14px;margin-right:4px"><use href="#icon-clock"/></svg>每周日2点</span>
+</div>
+<div class="help-text">格式: 分 时 日 月 周</div>
+<div class="error-text" id="cronError"></div>
+<div class="cron-preview" id="cronPreview"></div>
+</div>
+<div class="form-row">
+<div class="form-group">
+<label>Sleep 模式心跳间隔 (秒)</label>
+<input type="number" id="sleepHeartbeat" min="60" max="7200" placeholder="1800">
+<div class="help-text">Sleep 模式唤醒检查周期，范围 60-7200 秒 (默认 1800)</div>
+</div>
+<div class="form-group">
+<label>Web UI 超时时间 (秒)</label>
+<input type="number" id="webuiTimeout" min="60" max="3600" placeholder="300">
+<div class="help-text">无操作自动退出时间，范围 60-3600 秒 (默认 300)</div>
+</div>
+</div>
+<div class="form-group">
+<label>Web UI 心跳间隔 (秒)</label>
+<input type="number" id="heartbeatSec" min="10" max="300" placeholder="30">
+<div class="help-text">WebUI 守护进程心跳检测间隔，范围 10-300 秒 (默认 30)</div>
+</div>
+<div class="button-group">
+<button type="submit" id="saveConfigBtn"><svg class="icon icon-small"><use href="#icon-save"/></svg> 保存配置</button>
+<button type="button" class="secondary" id="reloadConfigBtn" onclick="loadConfig('reloadConfigBtn')"><svg class="icon icon-small"><use href="#icon-reload"/></svg> 重新加载</button>
+</div>
+</form>
+</div>
+
+<!-- action.sh 配置 -->
+<div class="card card-accent">
+<h2><svg class="icon icon-large"><use href="#icon-settings"/></svg>WebUI 启动控制</h2>
+<form id="actionConfigForm">
+<div class="form-group">
+<label>WebUI 自动启动模式</label>
+<select id="autoStartWebui">
+<option value="ask">询问用户 (推荐)</option>
+<option value="true">总是启动</option>
+<option value="false">从不启动</option>
+</select>
+<div class="help-text">控制手动触发任务后是否自动启动 WebUI</div>
+</div>
+<div class="form-group" id="promptTimeoutGroup">
+<label>音量键选择超时 (秒)</label>
+<input type="number" id="webuiPromptTimeout" min="1" max="60" placeholder="10">
+<div class="help-text">询问模式下等待用户按键的时间，范围 1-60 秒 (默认 10)</div>
+</div>
+<div class="button-group">
+<button type="submit" id="saveActionConfigBtn"><svg class="icon icon-small"><use href="#icon-save"/></svg> 保存配置</button>
+<button type="button" class="secondary" id="reloadActionConfigBtn" onclick="loadActionConfig('reloadActionConfigBtn')"><svg class="icon icon-small"><use href="#icon-reload"/></svg> 重新加载</button>
+</div>
+</form>
+</div>
+
+<!-- f2fsopt 核心配置 -->
+<div class="card card-accent">
+<h2><svg class="icon icon-large"><use href="#icon-database"/></svg>f2fsopt 配置</h2>
+<form id="f2fsoptForm">
+<div class="section-title">基础参数</div>
+<div class="form-row">
+<div class="form-group">
+<label>GC 脏段阈值</label>
+<input type="number" id="gcDirtyMin" placeholder="200">
+<div class="help-text">触发 GC 的 Dirty 段数 (150-300)</div>
+</div>
+<div class="form-group">
+<label>GC 最大时长 (秒)</label>
+<input type="number" id="gcMaxSec" placeholder="500">
+<div class="help-text">GC 操作超时时间 (300-600)</div>
+</div>
+</div>
+<div class="form-row">
+<div class="form-group">
+<label>Trim 超时 (秒)</label>
+<input type="number" id="trimTimeout" placeholder="500">
+<div class="help-text">Trim 操作超时时间 (300-600)</div>
+</div>
+<div class="form-group">
+<label>GC 轮询间隔 (秒)</label>
+<input type="number" id="gcPoll" placeholder="5">
+<div class="help-text">GC 状态检查间隔</div>
+</div>
+</div>
+
+<div class="section-title">GC 高级配置</div>
+<div class="form-row">
+<div class="form-group">
+<label>极速 GC 睡眠 (ms)</label>
+<input type="number" id="gcTurboSleep" placeholder="50">
+<div class="help-text">极速模式下的 GC 间隔</div>
+</div>
+<div class="form-group">
+<label>安全 GC 睡眠 (ms)</label>
+<input type="number" id="gcSafeSleep" placeholder="500">
+<div class="help-text">安全模式下的 GC 间隔</div>
+</div>
+</div>
+<div class="form-group">
+<label>GC 稳定计数</label>
+<input type="number" id="gcStableCnt" placeholder="3">
+<div class="help-text">连续稳定次数后切换模式</div>
+</div>
+
+<div class="section-title">智能功能开关</div>
+<div class="toggle-group">
+<div class="toggle-info">
+<div class="toggle-label">智能 GC</div>
+<div class="toggle-desc">根据系统负载自动调整 GC 策略</div>
+</div>
+<div class="toggle" id="toggleSmartGc" onclick="toggleSwitch('smartGc')"></div>
+</div>
+<div class="toggle-group">
+<div class="toggle-info">
+<div class="toggle-label">智能 Trim</div>
+<div class="toggle-desc">根据存储状态智能执行 Trim</div>
+</div>
+<div class="toggle" id="toggleSmartTrim" onclick="toggleSwitch('smartTrim')"></div>
+</div>
+<div class="toggle-group">
+<div class="toggle-info">
+<div class="toggle-label">极速 GC</div>
+<div class="toggle-desc">启用高性能 GC 模式 (耗电增加)</div>
+</div>
+<div class="toggle" id="toggleTurboGc" onclick="toggleSwitch('turboGc')"></div>
+</div>
+
+<div class="section-title">运行条件</div>
+<div class="toggle-group">
+<div class="toggle-info">
+<div class="toggle-label">亮屏中断</div>
+<div class="toggle-desc">屏幕点亮时暂停优化任务</div>
+</div>
+<div class="toggle" id="toggleStopOnScreen" onclick="toggleSwitch('stopOnScreen')"></div>
+</div>
+<div class="toggle-group">
+<div class="toggle-info">
+<div class="toggle-label">仅充电运行</div>
+<div class="toggle-desc">仅在充电状态下执行优化</div>
+</div>
+<div class="toggle" id="toggleOnlyCharging" onclick="toggleSwitch('onlyCharging')"></div>
+</div>
+
+<div class="button-group">
+<button type="submit" id="saveF2fsoptBtn"><svg class="icon icon-small"><use href="#icon-save"/></svg> 保存配置</button>
+<button type="button" class="secondary" id="reloadF2fsoptBtn" onclick="loadF2fsoptConfig('reloadF2fsoptBtn')"><svg class="icon icon-small"><use href="#icon-reload"/></svg> 重新加载</button>
+</div>
+</form>
+</div>
+
+<!-- 快捷操作 -->
+<div class="card card-success">
+<h2><svg class="icon icon-large"><use href="#icon-activity"/></svg>快捷操作</h2>
+<div class="action-item">
+<button class="success" id="runNowBtn" onclick="doAction('run_now')"><svg class="icon icon-small"><use href="#icon-play"/></svg> 立即执行</button>
+<span class="action-desc">直接执行 f2fsopt 优化任务，同步等待结果返回</span>
+</div>
+<div class="action-item">
+<button id="restartBtn" onclick="doAction('restart')"><svg class="icon icon-small"><use href="#icon-restart"/></svg> 重启服务</button>
+<span class="action-desc">仅重启调度服务 (service.sh)，不执行优化任务</span>
+</div>
+<div class="action-item">
+<button class="secondary" id="refreshStatusBtn" onclick="refreshStatus('refreshStatusBtn')"><svg class="icon icon-small"><use href="#icon-refresh"/></svg> 刷新状态</button>
+<span class="action-desc">刷新服务状态和日志信息</span>
+</div>
+</div>
+
+<!-- 日志查看器 -->
+<div class="card">
+<h2><svg class="icon icon-large"><use href="#icon-file-text"/></svg>日志查看器</h2>
+<div id="logBox" class="log-box">加载中...</div>
+<div class="button-group" style="margin-top:16px">
+<button class="secondary" id="refreshLogBtn" onclick="refreshLog('refreshLogBtn')"><svg class="icon icon-small"><use href="#icon-refresh"/></svg> 刷新</button>
+<button class="danger" onclick="clearLog()"><svg class="icon icon-small"><use href="#icon-delete"/></svg> 清空</button>
+<button class="secondary" onclick="toggleAutoRefresh()" id="autoRefreshBtn"><svg class="icon icon-small"><use href="#icon-pause"/></svg> 暂停自动刷新</button>
+</div>
+</div>
+
+<!-- 页脚 -->
+<div style="text-align:center;padding:20px;color:var(--text-tertiary);font-size:12px">
+<span id="footerText">临时 Web UI · 无操作自动退出</span>
+</div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const API = '/cgi-bin/api.sh';
+let autoRefreshInterval = null;
+const toggleState = {
+    smartGc: false,
+    smartTrim: false,
+    turboGc: false,
+    stopOnScreen: false,
+    onlyCharging: false
+};
+
+// 按钮状态管理器
+const ButtonState = {
+    IDLE: 'idle',
+    LOADING: 'loading',
+    DISABLED: 'disabled'
+};
+
+class ButtonManager {
+    constructor() {
+        this.buttons = new Map();
+    }
+    
+    setState(buttonId, state, text = null) {
+        const btn = document.getElementById(buttonId);
+        if (!btn) return;
+        
+        if (!this.buttons.has(buttonId)) {
+            this.buttons.set(buttonId, {
+                originalText: btn.textContent,
+                originalDisabled: btn.disabled
+            });
+        }
+        
+        const original = this.buttons.get(buttonId);
+        
+        switch(state) {
+            case ButtonState.LOADING:
+                btn.disabled = true;
+                btn.classList.add('loading');
+                if (text) btn.textContent = text;
+                break;
+                
+            case ButtonState.DISABLED:
+                btn.disabled = true;
+                btn.classList.remove('loading');
+                break;
+                
+            case ButtonState.IDLE:
+            default:
+                btn.disabled = original.originalDisabled;
+                btn.classList.remove('loading');
+                btn.textContent = original.originalText;
+                break;
+        }
+    }
+    
+    reset(buttonId) {
+        this.setState(buttonId, ButtonState.IDLE);
+    }
+}
+
+const btnManager = new ButtonManager();
+
+function showToast(msg, isError = false, duration = 3000) {
+    const t = document.getElementById('toast');
+    
+    // 检测消息是否已包含图标前缀 (✓ 或 ✗ 或 ⚠️ 或 ⊗)
+    const hasIconPrefix = /^[✓✗⚠️⊗]\s/.test(msg);
+    
+    let displayMsg = msg;
+    let iconSvg = '';
+    
+    if (hasIconPrefix) {
+        // 消息已包含图标,提取并移除前缀
+        const iconChar = msg.charAt(0);
+        displayMsg = msg.substring(2); // 移除图标和空格
+        
+        // 根据图标字符选择 SVG
+        if (iconChar === '✓') {
+            iconSvg = '<svg class="icon" style="width:18px;height:18px;stroke:var(--success)"><use href="#icon-check-circle"/></svg>';
+        } else if (iconChar === '✗') {
+            iconSvg = '<svg class="icon" style="width:18px;height:18px;stroke:var(--danger)"><use href="#icon-x-circle"/></svg>';
+        } else if (iconChar === '⚠️') {
+            iconSvg = '<svg class="icon" style="width:18px;height:18px;stroke:var(--warning)"><use href="#icon-alert-triangle"/></svg>';
+        } else if (iconChar === '⊗') {
+            iconSvg = '<svg class="icon" style="width:18px;height:18px;stroke:var(--warning)"><use href="#icon-cancel"/></svg>';
+        }
+    } else {
+        // 消息不包含图标,根据类型添加
+        if (isError) {
+            iconSvg = '<svg class="icon" style="width:18px;height:18px;stroke:var(--danger)"><use href="#icon-x-circle"/></svg>';
+        } else {
+            iconSvg = '<svg class="icon" style="width:18px;height:18px;stroke:var(--success)"><use href="#icon-check-circle"/></svg>';
+        }
+    }
+    
+    t.innerHTML = '<span class="toast-icon">' + iconSvg + '</span>' + displayMsg;
+    t.className = 'toast show ' + (isError ? 'error' : 'success');
+    
+    // 清除之前的定时器
+    if (t.hideTimer) clearTimeout(t.hideTimer);
+    
+    // 设置新的定时器
+    t.hideTimer = setTimeout(() => {
+        t.classList.remove('show');
+    }, duration);
+    
+    // 点击关闭
+    t.onclick = () => {
+        t.classList.remove('show');
+        if (t.hideTimer) clearTimeout(t.hideTimer);
+    };
+}
+
+async function apiGet(route) {
+    try {
+        const r = await fetch(API + '?' + route);
+        if (!r.ok) {
+            throw new Error('HTTP ' + r.status + ': ' + r.statusText);
+        }
+        const data = await r.json();
+        
+        // 只检查明确的错误响应
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        return data;
+    } catch (error) {
+        if (error.name === 'TypeError') {
+            throw new Error('网络连接失败，请检查服务是否运行');
+        }
+        throw error;
+    }
+}
+
+async function apiPost(route, data) {
+    try {
+        const r = await fetch(API + '?' + route, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        if (!r.ok) {
+            throw new Error('HTTP ' + r.status + ': ' + r.statusText);
+        }
+        const responseData = await r.json();
+        
+        // 只检查明确的错误响应
+        if (responseData.error) {
+            throw new Error(responseData.error);
+        }
+        
+        return responseData;
+    } catch (error) {
+        if (error.name === 'TypeError') {
+            throw new Error('网络连接失败，请检查服务是否运行');
+        }
+        throw error;
+    }
+}
+
+async function withFeedback(apiCall, buttonId = null, loadingText = null) {
+    try {
+        if (buttonId) {
+            btnManager.setState(buttonId, ButtonState.LOADING, loadingText);
+        }
+        
+        const response = await apiCall();
+        
+        if (response.success) {
+            showToast('✓ ' + response.message, false);
+            
+            // 保存配置后刷新配置状态
+            if (buttonId && (buttonId === 'saveConfigBtn' || buttonId === 'saveF2fsoptConfigBtn' || buttonId === 'saveActionConfigBtn')) {
+                setTimeout(() => refreshConfigStatus(), 500);
+            }
+        } else {
+            showToast('✗ ' + response.message, true);
+        }
+        
+        return response;
+        
+    } catch (error) {
+        showToast('✗ 操作失败: ' + error.message, true);
+        throw error;
+        
+    } finally {
+        if (buttonId) {
+            setTimeout(() => btnManager.reset(buttonId), 500);
+        }
+    }
+}
+
+function toggleSwitch(name) {
+    toggleState[name] = !toggleState[name];
+    updateToggleUI(name);
+}
+
+function updateToggleUI(name) {
+    const el = document.getElementById('toggle' + name.charAt(0).toUpperCase() + name.slice(1));
+    if (el) {
+        if (toggleState[name]) {
+            el.classList.add('active');
+        } else {
+            el.classList.remove('active');
+        }
+    }
+}
+
+function setToggle(name, value) {
+    toggleState[name] = (value === 'true' || value === true);
+    updateToggleUI(name);
+}
+
+// Cron 表达式验证
+function validateCron() {
+    const input = document.getElementById('cronExp');
+    const error = document.getElementById('cronError');
+    const preview = document.getElementById('cronPreview');
+    const exp = input.value.trim();
+    
+    if (!exp) {
+        input.classList.remove('error');
+        error.classList.remove('show');
+        preview.classList.remove('show');
+        return true;
+    }
+    
+    const parts = exp.split(/\s+/);
+    if (parts.length !== 5) {
+        input.classList.add('error');
+        error.textContent = '格式错误: 需要 5 个字段 (分 时 日 月 周)';
+        error.classList.add('show');
+        preview.classList.remove('show');
+        return false;
+    }
+    
+    const ranges = [
+        { name: '分钟', min: 0, max: 59 },
+        { name: '小时', min: 0, max: 23 },
+        { name: '日期', min: 1, max: 31 },
+        { name: '月份', min: 1, max: 12 },
+        { name: '星期', min: 0, max: 7 }
+    ];
+    
+    for (let i = 0; i < 5; i++) {
+        const part = parts[i];
+        // 支持: *, */n, n, n-m, n,m,o
+        if (!/^(\*|(\*\/[1-9]\d*)|([0-9]+(-[0-9]+)?)(,[0-9]+(-[0-9]+)?)*)$/.test(part)) {
+            input.classList.add('error');
+            error.textContent = ranges[i].name + ' 字段格式错误: ' + part;
+            error.classList.add('show');
+            preview.classList.remove('show');
+            return false;
+        }
+    }
+    
+    input.classList.remove('error');
+    error.classList.remove('show');
+    
+    // 显示预览
+    const previewText = getCronDescription(parts);
+    if (previewText) {
+        preview.textContent = '⏰ ' + previewText;
+        preview.classList.add('show');
+    }
+    return true;
+}
+
+function getCronDescription(parts) {
+    const [min, hour, day, month, week] = parts;
+    let desc = '';
+    
+    if (min === '0' && hour.startsWith('*/')) {
+        desc = '每 ' + hour.slice(2) + ' 小时执行';
+    } else if (min === '0' && /^\d+$/.test(hour) && day === '*' && month === '*' && week === '*') {
+        desc = '每天 ' + hour + ':00 执行';
+    } else if (min === '0' && /^\d+$/.test(hour) && day === '*' && month === '*' && /^\d+$/.test(week)) {
+        const weekNames = ['日', '一', '二', '三', '四', '五', '六', '日'];
+        desc = '每周' + weekNames[parseInt(week)] + ' ' + hour + ':00 执行';
+    }
+    return desc;
+}
+
+function setCron(exp) {
+    document.getElementById('cronExp').value = exp;
+    validateCron();
+}
+
+async function loadConfig(buttonId = null) {
+    try {
+        if (buttonId) {
+            btnManager.setState(buttonId, ButtonState.LOADING, '加载中...');
+        }
+        
+        const d = await apiGet('/api/config');
+        document.getElementById('scheduleMode').value = d.schedule_mode || 'sleep';
+        document.getElementById('cronExp').value = d.cron_exp || '';
+        document.getElementById('logMode').value = d.log_mode || 'INFO';
+        document.getElementById('sleepHeartbeat').value = d.sleep_heartbeat || '1800';
+        document.getElementById('webuiTimeout').value = d.webui_timeout || '300';
+        document.getElementById('heartbeatSec').value = d.heartbeat_sec || '30';
+        
+        // 更新页脚超时提示 - 增强容错处理
+        const footerText = document.getElementById('footerText');
+        if (footerText) {
+            // 确保获取有效的超时值
+            let timeoutSec = 300; // 默认 5 分钟
+            if (d.webui_timeout) {
+                const parsed = parseInt(d.webui_timeout, 10);
+                if (!isNaN(parsed) && parsed > 0) {
+                    timeoutSec = parsed;
+                }
+            }
+            const timeoutMin = Math.floor(timeoutSec / 60);
+            footerText.textContent = `临时 Web UI · ${timeoutMin}分钟无操作自动退出`;
+        }
+        
+        if (buttonId) {
+            showToast('✓ 配置已重新加载', false);
+        }
+    } catch(e) {
+        showToast('✗ 加载配置失败: ' + e.message, true);
+        // 加载失败时使用默认值更新页脚
+        const footerText = document.getElementById('footerText');
+        if (footerText) {
+            footerText.textContent = '临时 Web UI · 5分钟无操作自动退出';
+        }
+    } finally {
+        if (buttonId) {
+            setTimeout(() => btnManager.reset(buttonId), 500);
+        }
+    }
+}
+
+async function loadActionConfig(buttonId = null) {
+    try {
+        if (buttonId) {
+            btnManager.setState(buttonId, ButtonState.LOADING, '加载中...');
+        }
+        
+        const d = await apiGet('/api/action_config');
+        document.getElementById('autoStartWebui').value = d.auto_start_webui || 'ask';
+        document.getElementById('webuiPromptTimeout').value = d.webui_prompt_timeout || '10';
+        updatePromptTimeoutVisibility();
+        
+        if (buttonId) {
+            showToast('✓ 配置已重新加载', false);
+        }
+    } catch(e) {
+        showToast('✗ 加载 action.sh 配置失败: ' + e.message, true);
+    } finally {
+        if (buttonId) {
+            setTimeout(() => btnManager.reset(buttonId), 500);
+        }
+    }
+}
+
+function updatePromptTimeoutVisibility() {
+    const mode = document.getElementById('autoStartWebui').value;
+    const group = document.getElementById('promptTimeoutGroup');
+    const input = document.getElementById('webuiPromptTimeout');
+    
+    if (!group || !input) return;
+    
+    if (mode === 'ask') {
+        group.style.display = 'block';
+        group.style.opacity = '1';
+        input.disabled = false;
+    } else {
+        group.style.display = 'block';
+        group.style.opacity = '0.5';
+        input.disabled = true;
+    }
+}
+
+async function loadF2fsoptConfig(buttonId = null) {
+    try {
+        if (buttonId) {
+            btnManager.setState(buttonId, ButtonState.LOADING, '加载中...');
+        }
+        
+        const d = await apiGet('/api/f2fsopt_config');
+        document.getElementById('gcDirtyMin').value = d.gc_dirty_min || '200';
+        document.getElementById('trimTimeout').value = d.trim_timeout || '500';
+        document.getElementById('gcMaxSec').value = d.gc_max_sec || '500';
+        document.getElementById('gcTurboSleep').value = d.gc_turbo_sleep || '50';
+        document.getElementById('gcSafeSleep').value = d.gc_safe_sleep || '500';
+        document.getElementById('gcStableCnt').value = d.gc_stable_cnt || '3';
+        document.getElementById('gcPoll').value = d.gc_poll || '5';
+        setToggle('smartGc', d.enable_smart_gc);
+        setToggle('smartTrim', d.enable_smart_trim);
+        setToggle('turboGc', d.enable_turbo_gc);
+        setToggle('stopOnScreen', d.stop_on_screen);
+        setToggle('onlyCharging', d.only_charging);
+        
+        if (buttonId) {
+            showToast('✓ 配置已重新加载', false);
+        }
+    } catch(e) {
+        showToast('✗ 加载 f2fsopt 配置失败: ' + e.message, true);
+    } finally {
+        if (buttonId) {
+            setTimeout(() => btnManager.reset(buttonId), 500);
+        }
+    }
+}
+
+async function refreshStatus(buttonId = null) {
+    try {
+        if (buttonId) {
+            btnManager.setState(buttonId, ButtonState.LOADING, '刷新中...');
+        }
+        
+        const d = await apiGet('/api/status');
+        const status = d.service_status || '未知';
+        document.getElementById('serviceStatus').textContent = status;
+        document.getElementById('lastRun').textContent = d.last_run || '未知';
+        document.getElementById('logSize').textContent = d.log_size || '0 KB';
+        const badge = document.getElementById('statusBadge');
+        if (status.indexOf('运行中') >= 0) {
+            badge.innerHTML = '<svg class="icon"><use href="#icon-activity"/></svg>运行中';
+            badge.className = 'status-badge running';
+        } else {
+            badge.innerHTML = '<svg class="icon"><use href="#icon-circle"/></svg>已停止';
+            badge.className = 'status-badge stopped';
+        }
+        
+        // 加载配置状态
+        await refreshConfigStatus();
+        
+        if (buttonId) {
+            showToast('✓ 状态已刷新', false);
+        }
+    } catch(e) {
+        showToast('✗ 状态刷新失败: ' + e.message, true);
+    } finally {
+        if (buttonId) {
+            setTimeout(() => btnManager.reset(buttonId), 500);
+        }
+    }
+}
+
+// 刷新配置状态
+async function refreshConfigStatus() {
+    try {
+        const d = await apiGet('/api/config_status');
+        
+        // 更新配置状态
+        const configStatusEl = document.getElementById('configStatus');
+        if (d.synced) {
+            configStatusEl.innerHTML = '<svg class="icon" style="width:16px;height:16px;vertical-align:middle;margin-right:4px;stroke:var(--success)"><use href="#icon-check-circle"/></svg>已同步';
+            configStatusEl.style.color = 'var(--success)';
+        } else {
+            configStatusEl.innerHTML = '<svg class="icon" style="width:16px;height:16px;vertical-align:middle;margin-right:4px;stroke:var(--warning)"><use href="#icon-alert-triangle"/></svg>待生效';
+            configStatusEl.style.color = 'var(--warning)';
+        }
+        
+        // 更新下次执行时间
+        const nextRunEl = document.getElementById('nextRun');
+        let waitMinutes = 0;
+        
+        if (d.next_run && d.next_run > 0) {
+            const nextRunDate = new Date(d.next_run * 1000);
+            const now = new Date();
+            const diffMs = nextRunDate - now;
+            const diffMins = Math.floor(diffMs / 60000);
+            waitMinutes = diffMins;
+            
+            if (diffMins < 0) {
+                nextRunEl.textContent = '即将执行';
+            } else if (diffMins < 60) {
+                nextRunEl.textContent = '约 ' + diffMins + ' 分钟后';
+            } else {
+                const diffHours = Math.floor(diffMins / 60);
+                nextRunEl.textContent = '约 ' + diffHours + ' 小时后';
+            }
+        } else {
+            nextRunEl.textContent = '未知';
+        }
+        
+        // 显示/隐藏待生效提示
+        const alertBox = document.getElementById('pendingChangesAlert');
+        const alertMessage = document.getElementById('pendingChangesMessage');
+        
+        if (!d.synced && d.pending_changes) {
+            // 构建提示消息
+            let message = '配置已修改，';
+            
+            if (waitMinutes > 0) {
+                message += '将在 ' + waitMinutes + ' 分钟后自动生效。';
+                
+                // 根据等待时间提供建议
+                if (waitMinutes < 5) {
+                    message += '\n💡 建议：等待时间较短，可以等待自动生效。';
+                } else if (waitMinutes > 30) {
+                    message += '\n💡 建议：等待时间较长，建议立即应用配置。';
+                } else {
+                    message += '\n💡 提示：您可以立即应用配置或等待自动生效。';
+                }
+            } else {
+                message += '将在下次调度时生效。';
+            }
+            
+            alertMessage.textContent = message;
+            alertMessage.style.whiteSpace = 'pre-line';  // 支持换行
+            alertBox.style.display = 'flex';
+        } else {
+            alertBox.style.display = 'none';
+        }
+        
+    } catch(e) {
+        console.error('配置状态加载失败:', e);
+        document.getElementById('configStatus').textContent = '加载失败';
+        document.getElementById('nextRun').textContent = '加载失败';
+    }
+}
+
+// 触发立即执行
+// 全局变量保存当前执行 ID
+let currentExecutionId = null;
+
+// 触发立即执行
+async function triggerImmediateExecution() {
+    try {
+        // 显示执行进度模态框
+        showExecutionModal();
+        
+        // 触发立即执行
+        const response = await apiGet('/api/trigger_immediate');
+        
+        if (!response.success) {
+            throw new Error(response.message || '触发失败');
+        }
+        
+        // 保存执行 ID
+        currentExecutionId = response.execution_id;
+        
+        // 轮询执行状态
+        await pollExecutionStatus(response.execution_id);
+        
+        // 清除执行 ID
+        currentExecutionId = null;
+        
+    } catch(e) {
+        showToast('✗ 立即执行失败: ' + e.message, true);
+        hideExecutionModal();
+        currentExecutionId = null;
+        
+        // 在控制台输出详细错误信息
+        console.error('立即执行失败:', e);
+    }
+}
+
+// 取消执行
+async function cancelExecution() {
+    if (!currentExecutionId) {
+        showToast('⚠️ 没有正在执行的任务', true);
+        return;
+    }
+    
+    try {
+        const cancelBtn = document.getElementById('cancelExecutionBtn');
+        if (cancelBtn) {
+            cancelBtn.disabled = true;
+            cancelBtn.textContent = '取消中...';
+        }
+        
+        const response = await apiGet('/api/cancel_execution?id=' + currentExecutionId);
+        
+        if (response.success) {
+            showToast('✓ 已取消执行', false);
+        } else {
+            showToast('✗ 取消失败: ' + (response.message || '未知错误'), true);
+            
+            // 重新启用取消按钮
+            if (cancelBtn) {
+                cancelBtn.disabled = false;
+                cancelBtn.textContent = '取消';
+            }
+        }
+        
+    } catch(e) {
+        showToast('✗ 取消失败: ' + e.message, true);
+        console.error('取消执行失败:', e);
+        
+        // 重新启用取消按钮
+        const cancelBtn = document.getElementById('cancelExecutionBtn');
+        if (cancelBtn) {
+            cancelBtn.disabled = false;
+            cancelBtn.textContent = '取消';
+        }
+    }
+}
+
+// 显示执行进度模态框
+function showExecutionModal() {
+    const modal = document.createElement('div');
+    modal.id = 'executionModal';
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title">执行进度</div>
+                <button class="modal-close" onclick="hideExecutionModal()"><svg class="icon icon-small"><use href="#icon-close"/></svg></button>
+            </div>
+            <div class="execution-status">
+                <div class="status-spinner"></div>
+                <div class="status-text">正在执行...</div>
+            </div>
+            <div class="execution-log" id="executionLog">等待日志输出...</div>
+            <div class="button-group" style="margin-top:16px;justify-content:flex-end">
+                <button class="secondary" id="cancelExecutionBtn" onclick="cancelExecution()"><svg class="icon icon-small"><use href="#icon-cancel"/></svg> 取消</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+// 隐藏执行进度模态框
+function hideExecutionModal() {
+    const modal = document.getElementById('executionModal');
+    if (modal) {
+        modal.remove();
+    }
+}
+
+// 轮询执行状态
+async function pollExecutionStatus(executionId) {
+    const maxAttempts = 120; // 最多轮询 2 分钟
+    let attempts = 0;
+    
+    while (attempts < maxAttempts) {
+        try {
+            const response = await apiGet('/api/execution_status?id=' + executionId);
+            
+            // 更新日志
+            const logEl = document.getElementById('executionLog');
+            if (logEl && response.log_tail && response.log_tail.length > 0) {
+                logEl.textContent = response.log_tail.join('\n');
+                logEl.scrollTop = logEl.scrollHeight;
+            }
+            
+            // 检查状态
+            if (response.status === 'completed') {
+                // 执行完成
+                const statusEl = document.querySelector('.execution-status');
+                if (statusEl) {
+                    const duration = response.duration || 0;
+                    statusEl.innerHTML = `
+                        <svg class="icon icon-medium" style="stroke:var(--success)"><use href="#icon-check-circle"/></svg>
+                        <div class="status-text" style="color:var(--success)">执行完成 (耗时: ${duration}秒)</div>
+                    `;
+                }
+                
+                // 更新取消按钮为关闭按钮
+                const cancelBtn = document.getElementById('cancelExecutionBtn');
+                if (cancelBtn) {
+                    cancelBtn.disabled = false;
+                    cancelBtn.innerHTML = '<svg class="icon icon-small"><use href="#icon-close"/></svg> 关闭';
+                    cancelBtn.onclick = hideExecutionModal;
+                }
+                
+                showToast('✓ 配置已应用', false);
+                
+                // 刷新状态
+                refreshStatus();
+                
+                return;
+                
+            } else if (response.status === 'failed') {
+                // 执行失败
+                const statusEl = document.querySelector('.execution-status');
+                if (statusEl) {
+                    const exitCode = response.exit_code || 0;
+                    const duration = response.duration || 0;
+                    statusEl.innerHTML = `
+                        <svg class="icon icon-medium" style="stroke:var(--danger)"><use href="#icon-x-circle"/></svg>
+                        <div class="status-text" style="color:var(--danger)">执行失败 (退出码: ${exitCode}, 耗时: ${duration}秒)</div>
+                    `;
+                }
+                
+                // 更新取消按钮为关闭按钮
+                const cancelBtn = document.getElementById('cancelExecutionBtn');
+                if (cancelBtn) {
+                    cancelBtn.disabled = false;
+                    cancelBtn.innerHTML = '<svg class="icon icon-small"><use href="#icon-close"/></svg> 关闭';
+                    cancelBtn.onclick = hideExecutionModal;
+                }
+                
+                showToast('✗ 执行失败，请查看日志', true);
+                return;
+                
+            } else if (response.status === 'cancelled') {
+                // 已取消
+                const statusEl = document.querySelector('.execution-status');
+                if (statusEl) {
+                    statusEl.innerHTML = `
+                        <svg class="icon icon-medium" style="stroke:var(--warning)"><use href="#icon-cancel"/></svg>
+                        <div class="status-text" style="color:var(--warning)">已取消</div>
+                    `;
+                }
+                
+                // 更新取消按钮为关闭按钮
+                const cancelBtn = document.getElementById('cancelExecutionBtn');
+                if (cancelBtn) {
+                    cancelBtn.disabled = false;
+                    cancelBtn.innerHTML = '<svg class="icon icon-small"><use href="#icon-close"/></svg> 关闭';
+                    cancelBtn.onclick = hideExecutionModal;
+                }
+                
+                showToast('⊗ 执行已取消', false);
+                return;
+            }
+            
+            // 继续轮询
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            attempts++;
+            
+        } catch(e) {
+            console.error('轮询执行状态失败:', e);
+            attempts++;
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+    }
+    
+    // 超时
+    showToast('⚠️ 执行超时，请手动检查日志', true);
+    
+    // 禁用取消按钮
+    const cancelBtn = document.getElementById('cancelExecutionBtn');
+    if (cancelBtn) {
+        cancelBtn.disabled = true;
+        cancelBtn.textContent = '超时';
+    }
+}
+
+// 日志格式化和高亮
+function formatLog(logText) {
+    if (!logText) return '';
+    
+    return logText.split('\n').map(line => {
+        // 匹配时间戳 (YYYY-MM-DD HH:MM:SS)
+        line = line.replace(
+            /(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/g,
+            '<span class="log-timestamp">$1</span>'
+        );
+        
+        // 匹配日志级别
+        if (line.includes(' I ')) {
+            line = line.replace(' I ', ' <span class="log-level-info">I</span> ');
+        } else if (line.includes(' W ')) {
+            line = line.replace(' W ', ' <span class="log-level-warn">W</span> ');
+        } else if (line.includes(' E ')) {
+            line = line.replace(' E ', ' <span class="log-level-error">E</span> ');
+        }
+        
+        // 匹配成功标记
+        line = line.replace(/✓/g, '<span class="log-success">✓</span>');
+        
+        return line;
+    }).join('\n');
+}
+
+async function refreshLog(buttonId = null) {
+    try {
+        if (buttonId) {
+            btnManager.setState(buttonId, ButtonState.LOADING, '刷新中...');
+        }
+        
+        const r = await fetch(API + '?/api/logs');
+        const logText = await r.text();
+        const box = document.getElementById('logBox');
+        box.innerHTML = formatLog(logText);
+        box.scrollTop = box.scrollHeight;
+        
+        if (buttonId) {
+            showToast('✓ 日志已刷新', false);
+        }
+    } catch(e) {
+        showToast('✗ 日志加载失败: ' + e.message, true);
+    } finally {
+        if (buttonId) {
+            setTimeout(() => btnManager.reset(buttonId), 500);
+        }
+    }
+}
+
+async function clearLog() {
+    const r = await apiGet('/api/action/clear_log');
+    showToast(r.message, !r.success);
+    if(r.success) refreshLog();
+}
+
+async function doAction(act) {
+    // 操作确认
+    if(act === 'clear_log') {
+        if(!confirm('确定要清空日志吗？')) return;
+    }
+    
+    // 确定按钮 ID 和加载文字
+    const buttonMap = {
+        'run_now': { id: 'runNowBtn', text: '执行中...' },
+        'restart': { id: 'restartBtn', text: '重启中...' }
+    };
+    
+    const btnInfo = buttonMap[act];
+    
+    try {
+        // 设置按钮加载状态
+        if (btnInfo) {
+            btnManager.setState(btnInfo.id, ButtonState.LOADING, btnInfo.text);
+        }
+        
+        const r = await apiGet('/api/action/' + act);
+        let msg = r.message;
+        
+        // 添加耗时信息
+        if(r.duration !== undefined) {
+            msg += ' (耗时: ' + r.duration + '秒)';
+        }
+        
+        showToast(r.success ? '✓ ' + msg : '✗ ' + msg, !r.success);
+        
+        // 刷新状态和日志
+        setTimeout(refreshStatus, 1000);
+        if(act === 'run_now' || act === 'clear_log') {
+            setTimeout(refreshLog, 1500);
+        }
+        
+    } catch(e) {
+        showToast('✗ 操作失败: ' + e.message, true);
+    } finally {
+        // 恢复按钮状态
+        if (btnInfo) {
+            setTimeout(() => btnManager.reset(btnInfo.id), 500);
+        }
+    }
+}
+
+function toggleAutoRefresh() {
+    const btn = document.getElementById('autoRefreshBtn');
+    if(autoRefreshInterval) {
+        clearInterval(autoRefreshInterval);
+        autoRefreshInterval = null;
+        btn.innerHTML = '<svg class="icon icon-small"><use href="#icon-play"/></svg> 启动自动刷新';
+    } else {
+        autoRefreshInterval = setInterval(function() { refreshLog(); refreshStatus(); }, 5000);
+        btn.innerHTML = '<svg class="icon icon-small"><use href="#icon-pause"/></svg> 暂停自动刷新';
+    }
+}
+
+document.getElementById('configForm').onsubmit = async function(e) {
+    e.preventDefault();
+    
+    // 验证 Cron 表达式
+    const mode = document.getElementById('scheduleMode').value;
+    if (mode === 'cron' && !validateCron()) {
+        showToast('请修正 Cron 表达式格式', true);
+        return;
+    }
+    
+    // 验证范围
+    const sleepHeartbeat = document.getElementById('sleepHeartbeat').value;
+    if (sleepHeartbeat && !validateRange('sleepHeartbeat', 60, 7200, 'Sleep 心跳间隔')) {
+        return;
+    }
+    
+    const webuiTimeout = document.getElementById('webuiTimeout').value;
+    if (webuiTimeout && !validateRange('webuiTimeout', 60, 3600, 'Web UI 超时时间')) {
+        return;
+    }
+    
+    const heartbeatSec = document.getElementById('heartbeatSec').value;
+    if (heartbeatSec && !validateRange('heartbeatSec', 10, 300, 'Web UI 心跳间隔')) {
+        return;
+    }
+    
+    const data = {
+        schedule_mode: mode,
+        cron_exp: document.getElementById('cronExp').value,
+        log_mode: document.getElementById('logMode').value,
+        sleep_heartbeat: sleepHeartbeat,
+        webui_timeout: webuiTimeout,
+        heartbeat_sec: heartbeatSec
+    };
+    
+    await withFeedback(
+        () => apiPost('/api/config', data),
+        'saveConfigBtn',
+        '保存中...'
+    );
+};
+
+document.getElementById('actionConfigForm').onsubmit = async function(e) {
+    e.preventDefault();
+    
+    // 验证范围
+    const promptTimeout = document.getElementById('webuiPromptTimeout').value;
+    if (promptTimeout && !validateRange('webuiPromptTimeout', 1, 60, '音量键选择超时')) {
+        return;
+    }
+    
+    const data = {
+        auto_start_webui: document.getElementById('autoStartWebui').value,
+        webui_prompt_timeout: promptTimeout
+    };
+    
+    await withFeedback(
+        () => apiPost('/api/action_config', data),
+        'saveActionConfigBtn',
+        '保存中...'
+    );
+};
+
+// 监听 autoStartWebui 变化
+document.getElementById('autoStartWebui').addEventListener('change', updatePromptTimeoutVisibility);
+
+// 数值范围验证
+function validateRange(id, min, max, name) {
+    const el = document.getElementById(id);
+    const val = parseInt(el.value, 10);
+    if (isNaN(val) || val < min || val > max) {
+        el.classList.add('error');
+        showToast(name + ' 必须在 ' + min + '-' + max + ' 之间', true);
+        return false;
+    }
+    el.classList.remove('error');
+    return true;
+}
+
+document.getElementById('f2fsoptForm').onsubmit = async function(e) {
+    e.preventDefault();
+    
+    // 前端范围验证
+    if (!validateRange('gcDirtyMin', 50, 1000, 'GC脏段阈值')) return;
+    if (!validateRange('gcTurboSleep', 10, 5000, '极速GC睡眠')) return;
+    if (!validateRange('gcSafeSleep', 100, 10000, '安全GC睡眠')) return;
+    if (!validateRange('gcMaxSec', 60, 3600, 'GC最大时长')) return;
+    if (!validateRange('trimTimeout', 60, 3600, 'Trim超时')) return;
+    if (!validateRange('gcStableCnt', 1, 50, 'GC稳定计数')) return;
+    if (!validateRange('gcPoll', 1, 60, 'GC轮询间隔')) return;
+    
+    const data = {
+        gc_dirty_min: document.getElementById('gcDirtyMin').value,
+        gc_turbo_sleep: document.getElementById('gcTurboSleep').value,
+        gc_safe_sleep: document.getElementById('gcSafeSleep').value,
+        gc_max_sec: document.getElementById('gcMaxSec').value,
+        trim_timeout: document.getElementById('trimTimeout').value,
+        gc_stable_cnt: document.getElementById('gcStableCnt').value,
+        gc_poll: document.getElementById('gcPoll').value,
+        enable_smart_gc: toggleState.smartGc ? 'true' : 'false',
+        enable_smart_trim: toggleState.smartTrim ? 'true' : 'false',
+        enable_turbo_gc: toggleState.turboGc ? 'true' : 'false',
+        stop_on_screen: toggleState.stopOnScreen ? 'true' : 'false',
+        only_charging: toggleState.onlyCharging ? 'true' : 'false'
+    };
+    
+    await withFeedback(
+        () => apiPost('/api/f2fsopt_config', data),
+        'saveF2fsoptBtn',
+        '保存中...'
+    );
+};
+
+loadConfig();
+loadF2fsoptConfig();
+loadActionConfig();
+refreshStatus();
+refreshLog();
+autoRefreshInterval = setInterval(function() { refreshLog(); refreshStatus(); }, 5000);
+</script>
+</body>
+</html>
