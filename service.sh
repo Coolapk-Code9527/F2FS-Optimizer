@@ -1,556 +1,738 @@
 #!/system/bin/sh
 # ==============================================================================
-# 统一调度器 - Sleep/Cron 双引擎 (Source Guard Enabled)
-# 描述: 该脚本作为守护进程运行，负责定时触发 f2fsopt 优化任务。
-#       支持被其他脚本 source 以共享配置和函数。
+# 统一调度器 - F2FS 优化服务 (Ultimate Robust Edition)
+# 架构: Bootloader (瞬时) -> Daemon (常驻) -> Worker (瞬时)
 # ==============================================================================
 
 # ==============================================================================
-# PART 1: 定义与配置 (Source 共享区域)
+# PART 0: 共享初始化函数 (Shared Initialization Functions)
 # ==============================================================================
+# 这些函数可以被所有脚本（service.sh, webui.sh, action.sh）使用
+# 通过 --source-only 模式加载
 
-# 1.1 路径计算
-if [ -L "$0" ]; then
-    _script_real=$(readlink -f "$0" 2>/dev/null)
-    [ -n "$_script_real" ] && MODDIR="${_script_real%/*}" || MODDIR="${0%/*}"
-else
-    MODDIR="${0%/*}"
-fi
-# 确保绝对路径
-case "$MODDIR" in /*) ;; *) MODDIR="$(cd "$MODDIR" 2>/dev/null && pwd)" || MODDIR="/data/adb/modules/${0##*/}" ;; esac
-
-# 1.2 环境配置
-export PATH="/system/bin:/system/xbin:/vendor/bin:/product/bin:$PATH"
-export LC_ALL=C
-
-# 查找 Busybox (供所有依赖脚本使用)
-BB_PATH=""
-for p in "/data/adb/magisk/busybox" "/data/adb/ksu/bin/busybox" "/data/adb/ap/bin/busybox" "/data/data/com.termux/files/usr/bin/busybox" "/sbin/.magisk/busybox" "/system/xbin/busybox" "/system/bin/busybox" "$(command -v busybox)"; do
-    if [ -x "$p" ]; then 
-        BB_PATH="$p"
-        export PATH="${BB_PATH%/*}:$PATH"
-        break
+# 0.1 路径解析函数
+init_moddir() {
+    _im_script="${1:-$0}"
+    _im_dir=""
+    
+    # 处理符号链接
+    if [ -L "$_im_script" ]; then
+        _im_real=$(readlink -f "$_im_script" 2>/dev/null)
+        if [ -n "$_im_real" ]; then
+            _im_dir="${_im_real%/*}"
+        else
+            _im_dir="${_im_script%/*}"
+        fi
+    else
+        _im_dir="${_im_script%/*}"
     fi
-done
-
-# 依赖工具列表
-readonly REQUIRED_TOOLS="stat readlink mkdir rm sleep date tail pgrep pkill crond"
-
-init_command_proxy() {
-    if [ -z "$BB_PATH" ] || [ ! -x "$BB_PATH" ]; then return 1; fi
     
-    local _tool _bb_caps
+    # 确保绝对路径
+    case "$_im_dir" in
+        /*) MODDIR="$_im_dir" ;;
+        *)  MODDIR="$(cd "$_im_dir" 2>/dev/null && pwd)" || MODDIR="/data/adb/modules/f2fs_optimizer" ;;
+    esac
     
-    _bb_caps=" $(echo $("$BB_PATH" --list 2>/dev/null)) "
-    
-    for _tool in $REQUIRED_TOOLS; do
-        case "$_bb_caps" in 
-            *" $_tool "*)
-                eval "$_tool() { '$BB_PATH' $_tool \"\$@\"; }"
-                ;;
-            *)
-                # Busybox 不支持 -> 跳过（回退系统命令）
-                ;;
-        esac
-    done
-    
-    # 刷新 Shell 哈希表
-    hash -r 2>/dev/null || true
+    [ -n "$MODDIR" ] && return 0 || return 1
 }
 
-# 执行代理初始化
-init_command_proxy
+# 0.2 Busybox 探测函数
+init_busybox() {
+    BB_PATH=""
+    _ib_p=""
+    
+    # 按优先级顺序探测
+    for _ib_p in \
+        "/data/adb/magisk/busybox" \
+        "/data/adb/ksu/bin/busybox" \
+        "/data/adb/ap/bin/busybox" \
+        "/system/bin/busybox" \
+        "$(command -v busybox 2>/dev/null)"; do
+        
+        if [ -x "$_ib_p" ]; then
+            BB_PATH="$_ib_p"
+            export PATH="${BB_PATH%/*}:$PATH"
+            return 0
+        fi
+    done
+    
+    # 未找到 Busybox
+    printf '致命错误: 找不到 Busybox\n' >&2
+    return 1
+}
 
-# 1.3 核心配置变量
-# 目标脚本
+# ==============================================================================
+# PART 1: 角色分发 (Role Dispatcher)
+# ==============================================================================
+# 脚本入口分流：根据参数决定当前进程的角色
+# 必须置于脚本最顶端，以实现最高效的短路执行
+
+# 1.1 初始化模块路径（所有模式都需要）
+init_moddir "$0" || { printf '致命错误: 无法初始化模块目录\n' >&2; exit 1; }
+
+# 1.2 角色分发
+case "${1:-}" in
+    --worker)      __ROLE="worker" ;;  # Worker: 任务执行（由 Daemon/Cron 调用）
+    --daemon)      __ROLE="daemon" ;;  # Daemon: 后台常驻调度
+    --source-only) __ROLE="source" ;;  # Source: 配置加载（action.sh/webui.sh 使用）
+    *)  # Bootloader: Magisk 入口，启动 Daemon 后立即退出
+        chmod 755 "$MODDIR/service.sh" 2>/dev/null
+        /system/bin/sh "$MODDIR/service.sh" --daemon >/dev/null 2>&1 &
+        exit 0
+        ;;
+esac
+
+# 1.3 初始化 Busybox（所有模式都需要，但 --source-only 模式下由调用脚本决定是否调用）
+if [ "$__ROLE" != "source" ]; then
+    init_busybox || { printf '警告: 找不到 Busybox，部分功能可能无法使用\n' >&2; }
+fi
+
+# 1.4 保存当前进程 PID（避免在子 Shell 中误用 $$）
+readonly CURRENT_PID=$$
+
+# ==============================================================================
+# PART 2: 环境配置与健壮性函数库 (Shared Library)
+# ==============================================================================
+
+# 2.1 核心配置
 TARGET_COMMAND="$MODDIR/f2fsopt"
 
-# 定时调度模式 sleep | cron
+# 调度模式: sleep (推荐) | cron (精准)
+#   - sleep: 智能循环休眠，兼容性最好
+#   - cron:  使用系统 crond，零开销运行
 SCHEDULE_MODE="cron"
 
-# 定时规则 (Cron表达式 (*/N | M */N | M H * * *))
-# Sleep 模式支持的格式:
-#   "*/N * * * *"  - 每N分钟 (如 "*/10 * * * *" = 每10分钟)
-#   "0 */N * * *"  - 每N小时整点 (如 "0 */2 * * *" = 每2小时整点: 00:00, 02:00, 04:00...)
-#   "M */N * * *"  - 每N小时M分 (如 "30 */2 * * *" = 每2小时的30分: 00:30, 02:30, 04:30...)
-#   "M H * * *"    - 每天固定时间 (如 "30 02 * * *" = 每天02:30)
-# Cron 模式支持完整 Cron 语法
+# 定时规则 (Cron表达式)
+# Sleep 模式：计算下次执行时间
+# Cron 模式：传递给 crond 调度
+# 格式: 分 时 日 月 周
+# 示例:
+#   "0 */4 * * *"   - 每4小时执行一次（整点对齐）
+#   "*/30 * * * *"  - 每30分钟执行一次
+#   "0 3 * * *"     - 每天凌晨3点执行
+#   "0 */2 * * *"   - 每2小时执行一次（整点对齐）
+#   "*/15 * * * *"  - 每15分钟执行一次
 CRON_EXP="0 */4 * * *"
 
-SLEEP_HEARTBEAT="1800"             # Sleep 模式心跳 (秒)
-LOG_MODE="INFO"                    # INFO | ERROR | NONE
+SLEEP_HEARTBEAT="1800"             # Sleep模式心跳间隔（秒）
+LOG_MODE="INFO"                    # NONE | INFO | DEBUG
 MAX_LOG_SIZE="524288"              # 512KB
 STATE_FILE="$MODDIR/scheduler.state"
 LOCK_FILE="$MODDIR/run.lock"
-SVC_PID_FILE="$MODDIR/service.pid" # 统一 PID 文件名
+SVC_PID_FILE="$MODDIR/service.pid"
 LOG_FILE="$MODDIR/service.log"
 
-# 1.4 通用函数库
+# 2.2 依赖工具代理 (Robust Proxy)
+export PATH="/system/bin:/system/xbin:/vendor/bin:/product/bin:$PATH"
+export LC_ALL=C
+
+# 声明必需工具
+# 说明: 这些工具会通过 init_command_proxy 自动代理到 Busybox（如果可用）
+readonly REQUIRED_TOOLS="stat readlink mkdir rm sleep date tail pgrep pkill crond tr sed grep tee netstat httpd timeout"
+
+init_command_proxy() {
+    # 如果完全没有 Busybox，记录警告但尝试继续
+    if [ -z "$BB_PATH" ]; then
+        return 1
+    fi
+    
+    # 获取 Busybox 能力清单（echo 用于将换行符转为空格，确保 case 匹配正确）
+    _icp_tool=""; _icp_bb_caps=" $(echo $("$BB_PATH" --list 2>/dev/null)) "
+    
+    # 动态代理: 仅代理 Busybox 确实支持的命令
+    for _icp_tool in $REQUIRED_TOOLS; do
+        case "$_icp_bb_caps" in 
+            *" $_icp_tool "*) eval "$_icp_tool() { '$BB_PATH' $_icp_tool \"\$@\"; }" ;;
+        esac
+    done
+    hash -r 2>/dev/null || true
+}
+# 初始化代理
+init_command_proxy
+
+# 2.3 辅助函数 (Robust Utils)
 
 is_integer() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac }
+
+# 读取 /proc/PID/cmdline 并转换 NULL 字节为空格
+read_cmdline() {
+    _rc_file="$1"
+    [ ! -f "$_rc_file" ] && return 1
+    
+    # 策略 1: 使用 tr 命令（Busybox 代理或系统 tr）
+    if command -v tr >/dev/null 2>&1; then
+        tr '\0' ' ' < "$_rc_file" 2>/dev/null && return 0
+    fi
+    
+    # 策略 2: 纯 POSIX shell 实现（零依赖回退）
+    # 逐字节读取并替换 NULL 字节为空格
+    _rc_result=""
+    _rc_char=""
+    while IFS= read -r -n 1 _rc_char || [ -n "$_rc_char" ]; do
+        case "$_rc_char" in
+            "") _rc_result="$_rc_result " ;;  # NULL 字节显示为空
+            *) _rc_result="$_rc_result$_rc_char" ;;
+        esac
+    done < "$_rc_file" 2>/dev/null
+    
+    if [ -n "$_rc_result" ]; then
+        printf '%s' "$_rc_result"
+        return 0
+    fi
+    
+    # 策略 3: 最终回退 - 返回原始内容（包含 NULL 字节）
+    # 调用者需要使用放宽的匹配逻辑
+    cat "$_rc_file" 2>/dev/null
+}
 
 log_msg() { [ "$LOG_MODE" != "NONE" ] && printf '%s I %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1"; }
 log_warn() { [ "$LOG_MODE" != "NONE" ] && printf '%s W %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1"; }
 log_err() { printf '%s E %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1"; }
 
-# 进程清理
+# 深度进程清理 (Strategy 1 + Strategy 2)
 kill_by_pattern() {
-    local _pattern="$1" _pid _killed=0
+    _kbp_pattern="$1"; _kbp_pid=""; _kbp_killed=0
 
     # 策略 1: 使用 pgrep
     if command -v pgrep >/dev/null 2>&1; then
-        for _pid in $(pgrep -f "$_pattern" 2>/dev/null); do
-            [ "$_pid" = "$$" ] && continue
-            log_msg "   - 终止进程(pgrep): $_pid"
-            kill "$_pid" 2>/dev/null && _killed=1
+        for _kbp_pid in $(pgrep -f "$_kbp_pattern" 2>/dev/null); do
+            [ "$_kbp_pid" = "$CURRENT_PID" ] && continue
+            kill "$_kbp_pid" 2>/dev/null && _kbp_killed=1
         done
-        [ "$_killed" -eq 1 ] && return 0
+        return 0
     fi
 
-    # 策略 2: /proc 遍历
-    local _p _cmd
-    for _p in /proc/[0-9]*; do
-        [ -d "$_p" ] || continue
+    # 策略 2: 遍历 /proc (兜底 - 仅当 pgrep 不可用时)
+    _kbp_p=""; _kbp_cmd=""
+    for _kbp_p in /proc/[0-9]*; do
+        [ -d "$_kbp_p" ] || continue
+        _kbp_pid="${_kbp_p##*/}"
+        case "$_kbp_pid" in *[!0-9]*) continue ;; esac
+        [ "$_kbp_pid" = "$CURRENT_PID" ] && continue
         
-        _pid="${_p##*/}"
-        
-        # 严格校验纯数字 (排除 /proc/8350_reg 等内核伪目录)
-        case "$_pid" in *[!0-9]*) continue ;; esac
-        [ "$_pid" = "$$" ] && continue
-        
-        read -r _cmd < "$_p/cmdline" 2>/dev/null || continue
-        [ -z "$_cmd" ] && continue
-        
-        case "$_cmd" in
-            *"$_pattern"*)
-                log_msg "   - 终止进程(proc): $_pid"
-                kill "$_pid" 2>/dev/null
-                # 顽固进程延迟强杀
-                [ -d "$_p" ] && { sleep 0.05; kill -9 "$_pid" 2>/dev/null; }
+        _kbp_cmd=$(read_cmdline "$_kbp_p/cmdline") || continue
+        case "$_kbp_cmd" in
+            *"$_kbp_pattern"*)
+                kill "$_kbp_pid" 2>/dev/null
+                # 顽固进程双重保障
+                [ -d "$_kbp_p" ] && { sleep 0.1; kill -9 "$_kbp_pid" 2>/dev/null; }
                 ;;
         esac
     done
 }
 
-# 锁检查
+# 锁机制 (防止重入)
 is_locked() {
+    _il_pid=""; _il_cmd=""
     if [ -f "$LOCK_FILE" ]; then
-        local _pid _cmd
-        read -r _pid < "$LOCK_FILE" 2>/dev/null
-        if [ -n "$_pid" ] && is_integer "$_pid" && [ -d "/proc/$_pid" ]; then
-            read -r _cmd < "/proc/$_pid/cmdline" 2>/dev/null
-            case "$_cmd" in
-                *"f2fsopt"*|*"service.sh"*)
-                    return 0
-                    ;;
-            esac
+        read -r _il_pid < "$LOCK_FILE" 2>/dev/null
+        # 验证锁持有者是否存活 (防止死锁)
+        if [ -n "$_il_pid" ] && is_integer "$_il_pid" && [ -d "/proc/$_il_pid" ]; then
+            _il_cmd=$(read_cmdline "/proc/$_il_pid/cmdline")
+            case "$_il_cmd" in *"f2fsopt"*|*"service.sh"*) return 0 ;; esac
         fi
-        log_warn "清理失效锁 (PID: ${_pid:-null})"
+        # 锁已失效 (Stale Lock)，清理
         rm -f "$LOCK_FILE"
     fi
     return 1
 }
 
-# 原子写入状态
+# 原子状态写入
 atomic_write_state() {
-    echo "$1" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+    if ! echo "$1" > "${STATE_FILE}.tmp" 2>/dev/null; then
+        rm -f "${STATE_FILE}.tmp" 2>/dev/null
+        return 1
+    fi
+    mv "${STATE_FILE}.tmp" "$STATE_FILE" 2>/dev/null
 }
 
-# 日志轮替
+# 日志轮替 (Atomic)
 check_log_size() {
     [ "$LOG_MODE" = "NONE" ] && return
     [ ! -f "$LOG_FILE" ] && return
-    local _size
+    
+    _cls_size=""
     if command -v stat >/dev/null 2>&1; then
-        _size=$(stat -c%s "$LOG_FILE" 2>/dev/null)
+        _cls_size=$(stat -c%s "$LOG_FILE" 2>/dev/null)
     else
-        _size=$(wc -c < "$LOG_FILE" 2>/dev/null)
+        _cls_size=$(wc -c < "$LOG_FILE" 2>/dev/null) # Fallback
     fi
-    is_integer "$_size" || return
-    if [ "$_size" -gt "$MAX_LOG_SIZE" ]; then
-        local _tmp="${LOG_FILE}.tmp"
+    
+    case "$_cls_size" in *[!0-9]*) _cls_size=0 ;; esac
+    
+    if [ "$_cls_size" -gt "$MAX_LOG_SIZE" ]; then
+        mv "$LOG_FILE" "${LOG_FILE}.bak" 2>/dev/null
+        
+        # 检测 tail 命令可用性
         if command -v tail >/dev/null 2>&1; then
-            tail -n 200 "$LOG_FILE" > "$_tmp" 2>/dev/null
+            tail -n 200 "${LOG_FILE}.bak" > "$LOG_FILE" 2>/dev/null
         else
-            : > "$_tmp"
-        fi
-        # 原子替换（使用 mv 保证一致性）
-        if [ -s "$_tmp" ]; then
-            mv "$_tmp" "$LOG_FILE" 2>/dev/null
-        else
+            # 回退: tail 不可用时直接清空日志文件
             : > "$LOG_FILE"
-        fi
-        rm -f "$_tmp" 2>/dev/null
-    fi
-}
-
-# ==============================================================================
-# PART 2: Source Guard (源码守卫)
-# ==============================================================================
-if [ "${1:-}" = "--source-only" ]; then
-    # 安全退出：函数中 return，脚本中 exit
-    return 0 2>/dev/null || exit 0
-fi
-
-# ==============================================================================
-# PART 3: 运行时逻辑 (仅守护进程执行)
-# ==============================================================================
-
-# 信号捕获
-trap 'cleanup_scheduler' INT TERM
-
-# 日志重定向
-case "$LOG_MODE" in
-    NONE) 
-        exec > /dev/null 2>&1 
-        ;;
-    *)    
-        _log_dir="${LOG_FILE%/*}"
-        if [ ! -d "$_log_dir" ]; then
-            mkdir -p "$_log_dir" 2>/dev/null || LOG_FILE="/dev/null"
+            log_warn "tail 不可用，日志已清空"
         fi
         
-        if ! touch "$LOG_FILE" 2>/dev/null; then
-            exec > /dev/null 2>&1
-        else
-            exec >> "$LOG_FILE" 2>&1 || exec > /dev/null 2>&1
-        fi
-        ;;
-esac
-
-printf '%s\n' "========================================"
-printf '%s I 调度器 启动 (PID: %s)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$$"
-printf '%s\n' "========================================"
-
-# 3.2 运行时特有函数
-cleanup_scheduler() {
-    log_msg "服务停止"
-    kill_by_pattern "crond -c $MODDIR/cron.d"
-    rm -f "$LOCK_FILE" "$SVC_PID_FILE" "${STATE_FILE}.tmp" 2>/dev/null
-    rm -f "$MODDIR/cron.d/root" 2>/dev/null
-    rmdir "$MODDIR/cron.d" 2>/dev/null
-    exit 0
+        rm "${LOG_FILE}.bak" 2>/dev/null
+    fi
 }
 
-# ... 调度逻辑 ...
+# ==============================================================================
+# PART 3: 核心算法 (Core Algorithm) - 双模共享 (Sleep/Cron)
+# ==============================================================================
 
-# Cron表达式解析
+# 全局标志：避免重复解析 Cron 配置
+_CRON_PARSED=false
+
 parse_cron_config() {
+    # 如果已解析，直接返回（避免重复日志和性能开销）
+    [ "$_CRON_PARSED" = true ] && return 0
+    
     set -f; set -- $CRON_EXP; set +f
-    local _min="$1"; local _hour="$2"
-
-    # 类型 A: 固定时间
-    if is_integer "$_min" && is_integer "$_hour"; then
-        SCHED_TYPE="fixed"; SCHED_V1="$_hour"; SCHED_V2="$_min"
-        log_msg "策略: 每天 ${_hour}:${_min} 固定执行"
+    _pcc_min="$1"; _pcc_hour="$2"; _pcc_step=""
+    
+    # 类型 A: 固定时间 (M H * * *)
+    if is_integer "$_pcc_min" && is_integer "$_pcc_hour"; then
+        SCHED_TYPE="fixed"; SCHED_V1="$_pcc_hour"; SCHED_V2="$_pcc_min"
+        [ "$LOG_MODE" != "NONE" ] && log_msg "策略: 每天 ${_pcc_hour}:${_pcc_min} 固定执行"
+        _CRON_PARSED=true
         return 0
     fi
-    # 类型 B: 间隔
-    case "$_min" in \*/[0-9]*)
-        local _step="${_min#*/}"
-            if is_integer "$_step" && [ "$_step" -gt 0 ] && [ "$_hour" = "*" ]; then
-            SCHED_TYPE="interval"; SCHED_V1=$((_step * 60))
-            log_msg "策略: 每 ${_step} 分钟执行"
+    
+    # 类型 B: 间隔 (*/N * * * *)
+    case "$_pcc_min" in \*/[0-9]*)
+        _pcc_step="${_pcc_min#*/}"
+        if is_integer "$_pcc_step" && [ "$_pcc_step" -gt 0 ] 2>/dev/null && [ "$_pcc_hour" = "*" ]; then
+            SCHED_TYPE="interval"; SCHED_V1=$((_pcc_step * 60))
+            [ "$LOG_MODE" != "NONE" ] && log_msg "策略: 每 ${_pcc_step} 分钟执行"
+            _CRON_PARSED=true
             return 0
         fi
-    esac
-    # 类型 C: 对齐
-    case "$_hour" in \*/[0-9]*)
-        local _step="${_hour#*/}"
-        local _m_chk="${_min#0}"
-        _m_chk="${_m_chk#0}"
-        [ -z "$_m_chk" ] && _m_chk=0
-        _m_chk=$(printf "%d" "$_m_chk" 2>/dev/null) || _m_chk=0
-        if is_integer "$_step" && [ "$_step" -gt 0 ] && [ "$_m_chk" -eq 0 ] 2>/dev/null; then
-            SCHED_TYPE="align"; SCHED_V1="$_step"
-            log_msg "策略: 每 ${_step} 小时 (整点对齐)"
+    ;; esac
+    
+    # 类型 C: 对齐 (0 */N * * *)
+    case "$_pcc_hour" in \*/[0-9]*)
+        _pcc_step="${_pcc_hour#*/}"
+        if is_integer "$_pcc_step" && [ "$_pcc_step" -gt 0 ] 2>/dev/null; then
+            SCHED_TYPE="align"; SCHED_V1="$_pcc_step"
+            [ "$LOG_MODE" != "NONE" ] && log_msg "策略: 每 ${_pcc_step} 小时 [整点对齐]"
+            _CRON_PARSED=true
             return 0
         fi
-    esac
-    log_err "配置不支持: $CRON_EXP"
+    ;; esac
+    
+    # 默认回退
+    SCHED_TYPE="align"; SCHED_V1=4
+    [ "$LOG_MODE" != "NONE" ] && log_err "配置不支持: $CRON_EXP [默认每4小时]"
+    _CRON_PARSED=true
     return 1
 }
 
-# 计算下次执行时间戳
 calc_next_target() {
-    local _ts="$1" _h="$2" _m="$3" _s="$4"
-    local _passed=$((_h * 3600 + _m * 60 + _s))
-    local _today_start=$((_ts - _passed))
+    _cnt_ts="$1"; _cnt_h="$2"; _cnt_m="$3"; _cnt_s="$4"
+    _cnt_passed=$((_cnt_h * 3600 + _cnt_m * 60 + _cnt_s))
+    _cnt_today_start=$((_cnt_ts - _cnt_passed))
     
     case "$SCHED_TYPE" in
         "interval")
-            local _last=0
-            [ -f "$STATE_FILE" ] && read -r _last < "$STATE_FILE" 2>/dev/null
-            
-            # 未来时间视为无效（用户回调时间）
-            if is_integer "$_last"; then
-                if [ "$_last" -gt "$_ts" ]; then _last=$_ts; fi
-            else
-                _last=$_ts
-            fi
-            
-            local _next=$((_last + SCHED_V1))
-            # 滞后补偿
-            if [ "$_next" -le "$_ts" ]; then printf '%s\n' "$((_ts + 5))"; else printf '%s\n' "$_next"; fi
+            _cnt_last=0
+            [ -f "$STATE_FILE" ] && read -r _cnt_last < "$STATE_FILE" 2>/dev/null
+            case "$_cnt_last" in *[!0-9]*) _cnt_last=0 ;; esac
+            [ -z "$_cnt_last" ] && _cnt_last=$_cnt_ts
+            [ "$_cnt_last" -gt "$_cnt_ts" ] 2>/dev/null && _cnt_last=$_cnt_ts
+            _cnt_next=$((_cnt_last + SCHED_V1))
+            if [ "$_cnt_next" -le "$_cnt_ts" ] 2>/dev/null; then echo "$((_cnt_ts + 5))"; else echo "$_cnt_next"; fi
             ;;
         "align")
-            local _step="$SCHED_V1"
-            # 除零保护
-            if ! is_integer "$_step" || [ "$_step" -eq 0 ]; then
-                printf '%s\n' "$_ts"  # 返回当前时间
+            _cnt_step="${SCHED_V1:-2}"
+            # 除零保护 + 整数校验
+            if ! is_integer "$_cnt_step" || [ "$_cnt_step" -eq 0 ] 2>/dev/null; then
+                log_err "无效的对齐步长: ${_cnt_step}，使用当前时间"
+                echo "$_cnt_ts"
                 return 1
             fi
-            local _next_H=$(( ((_h / _step) + 1) * _step ))
-            local _offset=$((_next_H * 3600))
-            printf '%s\n' "$((_today_start + _offset))"
+            _cnt_next_H=$(( ((_cnt_h / _cnt_step) + 1) * _cnt_step ))
+            _cnt_offset=$((_cnt_next_H * 3600))
+            echo "$((_cnt_today_start + _cnt_offset))"
             ;;
         "fixed")
-            local _offset=$((SCHED_V1 * 3600 + SCHED_V2 * 60))
-            local _tar=$((_today_start + _offset))
-            if [ "$_tar" -le "$_ts" ]; then printf '%s\n' "$((_tar + 86400))"; else printf '%s\n' "$_tar"; fi
+            _cnt_offset=$((SCHED_V1 * 3600 + SCHED_V2 * 60))
+            _cnt_tar=$((_cnt_today_start + _cnt_offset))
+            if [ "$_cnt_tar" -le "$_cnt_ts" ] 2>/dev/null; then echo "$((_cnt_tar + 86400))"; else echo "$_cnt_tar"; fi
             ;;
     esac
 }
 
-# ==============================================================================
-# 公共函数：首次启动与开机检测
-# ==============================================================================
-
+# 公共函数：首次启动检查（统一 Sleep/Cron 行为）
 run_first_time_check() {
     if [ ! -f "$STATE_FILE" ]; then
-        log_msg "初始化: 首次安装/重启，立即执行"
-        if ! is_locked; then
-            echo "$$" > "$LOCK_FILE"
+        log_msg "初始化: 首次安装，立即执行"
+        
+        if is_locked; then
+            log_warn "首次任务跳过 - 锁存在"
+            return 1
+        fi
+        
+        # 写入锁
+        if ! echo "$CURRENT_PID" > "$LOCK_FILE" 2>/dev/null; then
+            log_err "无法创建锁文件: $LOCK_FILE"
+            return 1
+        fi
+        
+        # 更新状态
+        if ! atomic_write_state "$(date +%s)"; then
+            log_warn "状态文件更新失败"
+        fi
+        
+        # 执行目标命令
+        if [ -x "$TARGET_COMMAND" ]; then
+            "$TARGET_COMMAND" < /dev/null >> "$LOG_FILE" 2>&1
+            _rftc_ret=$?
+            log_msg "<<< 首次任务完成 - Code: ${_rftc_ret}"
+        else
+            log_err "目标不存在: $TARGET_COMMAND"
+        fi
+        
+        # 解锁
+        rm -f "$LOCK_FILE" 2>/dev/null
+        return 0
+    fi
+    return 1
+}
+
+# 统一任务触发检查器
+try_run_task() {
+    _trt_source="$1"
+    _trt_time_data=$(date +'%s %H %M %S' 2>/dev/null)
+    if [ -z "$_trt_time_data" ]; then
+        log_warn "[$_trt_source] 时间获取失败，跳过本次调度"
+        return 1
+    fi
+    set -- $_trt_time_data
+    _trt_NOW_TS="$1"; _trt_NOW_H="$2"; _trt_NOW_M="$3"; _trt_NOW_S="$4"
+    
+    _trt_NOW_H=$(printf "%d" "$_trt_NOW_H" 2>/dev/null) || _trt_NOW_H=0
+    _trt_NOW_M=$(printf "%d" "$_trt_NOW_M" 2>/dev/null) || _trt_NOW_M=0
+    _trt_NOW_S=$(printf "%d" "$_trt_NOW_S" 2>/dev/null) || _trt_NOW_S=0
+    
+    parse_cron_config
+    _trt_next_run=$(calc_next_target "$_trt_NOW_TS" "$_trt_NOW_H" "$_trt_NOW_M" "$_trt_NOW_S")
+    if [ -z "$_trt_next_run" ] || ! is_integer "$_trt_next_run"; then
+        log_warn "[$_trt_source] 时间计算失败，跳过本次调度"
+        return 1
+    fi
+    _trt_wait_sec=$((_trt_next_run - _trt_NOW_TS))
+
+    if [ "$_trt_wait_sec" -le 0 ]; then
+        if is_locked; then
+            [ "$LOG_MODE" = "INFO" ] && log_msg "[$_trt_source] 锁定中 [跳过]"
+            return 0
+        else
+            log_msg "[$_trt_source] 触发任务 >>>"
+            if ! echo "$CURRENT_PID" > "$LOCK_FILE" 2>/dev/null; then
+                log_warn "[$_trt_source] 无法创建锁文件，跳过"
+                return 1
+            fi
+            atomic_write_state "$(date +%s)"
             
-            if ! atomic_write_state "$(date +%s)"; then
-                log_warn "状态文件更新失败"
+            # 同步执行目标命令，日志追加到文件
+            if [ -x "$TARGET_COMMAND" ]; then
+                # 同步执行，日志追加
+                "$TARGET_COMMAND" < /dev/null >> "$LOG_FILE" 2>&1
+                _trt_ret=$?
+                log_msg "[$_trt_source] 完成 [Code: $_trt_ret]"
+            else
+                log_err "[$_trt_source] 目标不存在: $TARGET_COMMAND"
             fi
             
-            "$TARGET_COMMAND" < /dev/null
-            
             rm -f "$LOCK_FILE"
-            log_msg "<<< 首次任务完成"
-        else
-            log_warn "首次任务跳过 (锁存在)"
+            return 0
         fi
+    else
+        echo "$_trt_wait_sec"
+        return 1
     fi
 }
 
+# ==============================================================================
+# PART 4: Source Guard (源码守卫)
+# ==============================================================================
+if [ "$__ROLE" = "source" ]; then return 0 2>/dev/null || exit 0; fi
 
 # ==============================================================================
-# Sleep 引擎主循环
+# PART 5: Worker 逻辑 (任务执行层)
 # ==============================================================================
+# 仅当角色为 Worker 时执行此块（由 Daemon 或 Cron 调用）
 
-run_sleep_engine() {
-    # 子Shell需重新注册信号捕获
-    trap 'cleanup_scheduler' INT TERM
-
-    # OOM 保护
-    if [ -f /proc/self/oom_score_adj ]; then
-        echo "-1000" > /proc/self/oom_score_adj 2>/dev/null
-    fi
-
-    # 解析配置（仅在未解析时执行，避免重复）
-    if [ -z "$SCHED_TYPE" ]; then
-        if ! parse_cron_config; then
-            log_err "配置错误，默认每2小时"
-            SCHED_TYPE="align"; SCHED_V1=2
-        fi
+if [ "$__ROLE" = "worker" ]; then
+    # 日志输出定向到文件
+    if [ -f "$LOG_FILE" ] || touch "$LOG_FILE" 2>/dev/null; then
+        exec >> "$LOG_FILE" 2>&1 || exec > /dev/null 2>&1
+    else
+        exec > /dev/null 2>&1
     fi
     
-    # 首次启动检查（仅在未执行时调用）
+    if [ -x "$TARGET_COMMAND" ]; then
+        "$TARGET_COMMAND" < /dev/null
+    else
+        log_err "[错误] 目标命令不存在: $TARGET_COMMAND"
+    fi
+    exit 0
+fi
+
+# ==============================================================================
+# PART 6: Daemon 逻辑 (守护进程主循环)
+# ==============================================================================
+# 仅当角色为 Daemon 时执行此块 (已被 Bootloader 放入后台)
+
+trap 'cleanup_scheduler' EXIT INT TERM HUP QUIT ABRT
+
+# 守护进程日志初始化
+_log_dir="${LOG_FILE%/*}"
+if [ ! -d "$_log_dir" ]; then
+    mkdir -p "$_log_dir" 2>/dev/null || LOG_FILE="/dev/null"
+fi
+
+# 预检查日志文件可写性
+if ! touch "$LOG_FILE" 2>/dev/null; then
+    # 无法创建/写入，回退到 /dev/null
+    exec > /dev/null 2>&1
+else
+    exec >> "$LOG_FILE" 2>&1 || {
+        # exec 失败（极端情况），回退
+        exec > /dev/null 2>&1
+    }
+fi
+
+# 清理旧实例（防止多实例并发）
+if [ -f "$SVC_PID_FILE" ]; then
+    _old_pid=""
+    read -r _old_pid < "$SVC_PID_FILE" 2>/dev/null
+    
+    if [ -n "$_old_pid" ] && is_integer "$_old_pid" && [ -d "/proc/$_old_pid" ] && [ "$_old_pid" != "$CURRENT_PID" ]; then
+        # 验证进程类型：仅清理 service.sh / crond 相关进程
+        _old_cmd=$(read_cmdline "/proc/$_old_pid/cmdline")
+        case "$_old_cmd" in
+            *"service.sh"*|*"crond"*" -c "*|*"crond -c"*)
+                log_msg "清理旧实例 [PID: $_old_pid]"
+                kill "$_old_pid" 2>/dev/null
+                sleep 1
+                # 顽固进程强杀
+                [ -d "/proc/$_old_pid" ] && kill -9 "$_old_pid" 2>/dev/null
+                ;;
+            *)
+                log_warn "跳过非服务进程 [PID: $_old_pid]"
+                ;;
+        esac
+    fi
+fi
+
+# 写入 PID (关键: action.sh 依赖此文件来停止服务)
+_pid_dir="${SVC_PID_FILE%/*}"
+if [ ! -d "$_pid_dir" ]; then
+    mkdir -p "$_pid_dir" 2>/dev/null || {
+        log_err "❌ 无法创建PID目录: $_pid_dir"
+        exit 1
+    }
+fi
+
+if ! echo "$CURRENT_PID" > "$SVC_PID_FILE" 2>/dev/null; then
+    log_err "❌ 无法写入PID文件: $SVC_PID_FILE [磁盘满/权限不足]"
+    exit 1
+fi
+
+# 配置验证
+validate_service_config() {
+    case "$SCHEDULE_MODE" in
+        sleep|cron) ;;
+        *)
+            log_err "致命错误: SCHEDULE_MODE=$SCHEDULE_MODE 无效，必须是 sleep 或 cron"
+            exit 1
+            ;;
+    esac
+}
+
+# 在 Daemon 启动前调用验证函数
+validate_service_config
+
+log_msg "=== 守护进程启动 [PID: $CURRENT_PID, Mode: $SCHEDULE_MODE] ==="
+
+# 健壮性: 智能开机等待（区分开机/手动场景）
+wait_for_boot() {
+    # 读取系统运行时间
+    _wfb_uptime=0
+    if [ -r "/proc/uptime" ]; then
+        read -r _wfb_uptime _ < /proc/uptime 2>/dev/null
+        _wfb_uptime=${_wfb_uptime%%.*}  # 提取整数部分
+    fi
+    case "$_wfb_uptime" in *[!0-9]*) _wfb_uptime=0 ;; esac
+    
+    if [ "$_wfb_uptime" -lt 300 ] 2>/dev/null; then
+        # 开机场景：系统运行时间 < 5分钟
+        if [ "$(getprop sys.boot_completed 2>/dev/null)" = "1" ]; then
+            log_msg "检测到系统已就绪 [uptime: ${_wfb_uptime}s]，快速启动"
+            sleep 3
+        else
+            log_msg "检测到开机启动 [uptime: ${_wfb_uptime}s]，等待系统稳定"
+            
+            _wfb_cnt=0
+            until [ "$(getprop sys.boot_completed 2>/dev/null)" = "1" ] || [ "$_wfb_cnt" -ge 60 ] 2>/dev/null; do
+                sleep 2
+                _wfb_cnt=$((_wfb_cnt + 1))
+            done
+            
+            if [ "$_wfb_cnt" -ge 60 ] 2>/dev/null; then
+                log_warn "等待开机超时，强制启动"
+            else
+                log_msg "开机广播已接收，额外缓冲 30秒"
+                sleep 30
+            fi
+        fi
+    else
+        # 手动重启场景：系统已运行 > 5分钟
+        log_msg "检测到手动重启 [uptime: ${_wfb_uptime}s]，快速启动"
+    fi
+}
+wait_for_boot
+
+# 开机清理锁（防止异常退出遗留的锁文件）
+rm -f "$LOCK_FILE"
+
+cleanup_scheduler() {
+    trap - EXIT INT TERM HUP QUIT ABRT  # 防止递归调用
+    
+    log_msg "服务停止，清理资源"
+    
+    # 清理 crond 进程
+    kill_by_pattern "crond -c $MODDIR/cron.d"
+    
+    # 清理文件资源
+    rm -f "$LOCK_FILE" "$SVC_PID_FILE" "${STATE_FILE}.tmp" 2>/dev/null
+    
+    # 清理 Cron 配置
+    rm -f "$MODDIR/cron.d/root" 2>/dev/null
+    rmdir "$MODDIR/cron.d" 2>/dev/null
+    
+    exit 0
+}
+
+# --- 引擎实现 ---
+
+# 引擎 1: Sleep (默认 - 推荐)
+run_sleep_engine() {
+    log_msg "启动 Sleep 模式 [Heartbeat: ${SLEEP_HEARTBEAT}s]"
+    
+    # 首次安装统一处理
     run_first_time_check
-
-    log_msg "Sleep 引擎就绪 (心跳间隔: ${SLEEP_HEARTBEAT}s)"
-
+    
+    # 预解析配置（parse_cron_config 内部有缓存机制，避免重复解析）
+    parse_cron_config
+    
     while true; do
         check_log_size
+        _rse_wait_info=$(try_run_task "Sleep")
+        _rse_wait_sec=0
+        if is_integer "$_rse_wait_info"; then _rse_wait_sec="$_rse_wait_info"; fi
         
-        # 获取当前时间 (set -- 安全解析) + 错误处理
-        local _time_data
-        _time_data=$(date +'%s %H %M %S' 2>/dev/null)
-        if [ -z "$_time_data" ]; then
-            log_warn "时间获取失败，跳过本次调度"
-            sleep 60
-            continue
-        fi
-        set -- $_time_data
-        local _NOW_TS="$1" _NOW_H="$2" _NOW_M="$3" _NOW_S="$4"
-        
-        # 八进制陷阱保护（强制十进制）
-        _NOW_H=$(printf "%d" "$_NOW_H" 2>/dev/null) || _NOW_H=0
-        _NOW_M=$(printf "%d" "$_NOW_M" 2>/dev/null) || _NOW_M=0
-        _NOW_S=$(printf "%d" "$_NOW_S" 2>/dev/null) || _NOW_S=0
-        
-        # 计算下次运行时间
-        local _next_run
-        _next_run=$(calc_next_target "$_NOW_TS" "$_NOW_H" "$_NOW_M" "$_NOW_S")
-        if ! is_integer "$_next_run"; then
-            log_warn "时间计算失败，跳过本次调度"
-            sleep 60
-            continue
-        fi
-        local _wait_sec=$((_next_run - _NOW_TS))
-        
-        # 时间修正
-        if [ "$_wait_sec" -le 0 ]; then
-            [ "$_wait_sec" -lt -10 ] && log_warn "时间滞后 ${_wait_sec}s，校准中"
-            sleep 5
-            continue
-        fi
-        
-        local _wait_min=$((_wait_sec / 60))
-        log_msg "待机: 下次运行约 $_wait_min 分钟后 (等待 ${_wait_sec}s)"
-
-        # 心跳休眠
-        while [ "$_wait_sec" -gt 0 ]; do
-            local _chunk=$SLEEP_HEARTBEAT
-            [ "$_wait_sec" -lt "$SLEEP_HEARTBEAT" ] && _chunk="$_wait_sec"
+        if [ "$_rse_wait_sec" -gt 0 ] 2>/dev/null; then
+            # 可读性日志：显示等待时间
+            _rse_wait_min=$((_rse_wait_sec / 60))
+            log_msg "待机: 下次运行约 ${_rse_wait_min} 分钟后..."
             
-            sleep "$_chunk"
-            
-            local _curr=$(date +%s)
-            [ "$_curr" -ge "$_next_run" ] && break
-            _wait_sec=$((_next_run - _curr))
-        done
-
-        # 触发执行
-        log_msg ">>> 触发任务"
-        
-        if is_locked; then
-            log_warn "任务被锁定，跳过"
-            sleep 60
+            # 智能分段休眠 (防止长时间 Sleep 导致进程僵死)
+            while [ "$_rse_wait_sec" -gt 0 ] 2>/dev/null; do
+                _rse_chunk=$SLEEP_HEARTBEAT
+                [ "$_rse_wait_sec" -lt "$SLEEP_HEARTBEAT" ] 2>/dev/null && _rse_chunk="$_rse_wait_sec"
+                sleep "$_rse_chunk"
+                break # 醒来后强制重算时间，应对系统休眠偏差
+            done
         else
-            echo "$$" > "$LOCK_FILE"
-            
-            if ! atomic_write_state "$(date +%s)"; then
-                log_warn "状态文件更新失败"
-            fi
-            
-            if [ -x "$TARGET_COMMAND" ]; then
-                "$TARGET_COMMAND" < /dev/null
-                local _ret=$?
-                log_msg "<<< 完成 (Code: $_ret)"
-            else
-                log_err "不可执行: $TARGET_COMMAND"
-            fi
-            
-            rm -f "$LOCK_FILE"
+            sleep 5
         fi
-        
-        sleep 5
     done
 }
 
+# 引擎 2: Cron (系统定时 - 可选)
 run_cron_engine() {
-    log_msg "启动 Cron 引擎"
-    
-    # 检查 crond 可用性（代理层已处理 Busybox/系统命令选择）
     if ! command -v crond >/dev/null 2>&1; then
-        log_err "crond 命令不可用，回退 Sleep 模式"
+        log_err "Crond 缺失，回退 Sleep"
         run_sleep_engine
         return
     fi
+    log_msg "启动 Cron 模式"
     
-    # 首次启动立即执行
+    # 首次安装统一处理
     run_first_time_check
     
-    # 预解析配置
-    if ! parse_cron_config; then
-        log_err "配置错误，回退 Sleep 模式"
-        SCHED_TYPE="align"; SCHED_V1=2
-    fi
+    _rce_cron_dir="$MODDIR/cron.d"
+    mkdir -p "$_rce_cron_dir" 2>/dev/null
     
-    # 创建 Cron 配置目录（绝对路径）
-    local _cron_dir="$MODDIR/cron.d"
-    if ! mkdir -p "$_cron_dir" 2>/dev/null; then
-        log_err "无法创建配置目录，回退 Sleep 模式"
-        run_sleep_engine
-        return
-    fi
+    # 构造命令: 调用本脚本的 Worker 角色，保持逻辑统一
+    # 这样 Cron 触发时，也走 Worker 逻辑，享受统一的锁和日志管理
+    _rce_cmd="/system/bin/sh $MODDIR/service.sh --worker"
     
-    # 确保目标命令是绝对路径
-    local _abs_target="$TARGET_COMMAND"
-    local _abs_log="$LOG_FILE"
-    case "$_abs_target" in /*) ;; *) _abs_target="$MODDIR/$_abs_target" ;; esac
-    case "$_abs_log" in /*) ;; *) _abs_log="$MODDIR/$_abs_log" ;; esac
+    echo "$CRON_EXP $_rce_cmd" > "$_rce_cron_dir/root"
+    chmod 0600 "$_rce_cron_dir/root"
     
-    # 构建完整命令
-    local _full_cmd="/system/bin/sh -c '$_abs_target >>$_abs_log 2>&1'"
-    
-    # 写入 Cron 配置
-    local _cron_cfg="$_cron_dir/root"
-    if ! printf '%s %s\n' "$CRON_EXP" "$_full_cmd" > "$_cron_cfg" 2>/dev/null; then
-        log_err "配置写入失败，回退 Sleep 模式"
-        run_sleep_engine
-        return
-    fi
-    chmod 0600 "$_cron_cfg" 2>/dev/null
-    
-    # 配置验证
-    if [ "$LOG_MODE" != "NONE" ]; then
-        local _cfg_line
-        read -r _cfg_line < "$_cron_cfg" 2>/dev/null
-        log_msg "配置: ${_cfg_line}"
-    fi
-    
-    # 停止旧 crond 进程
-    kill_by_pattern "crond -c $_cron_dir"
-    sleep 1
-    
-    # 启动 crond（代理层已处理 Busybox/系统命令选择）
-    if ! crond -c "$_cron_dir" -b -L /dev/null 2>/dev/null; then
-        log_err "crond 启动失败，回退 Sleep 模式"
-        run_sleep_engine
-        return
-    fi
+    kill_by_pattern "crond -c $_rce_cron_dir"
+    crond -c "$_rce_cron_dir" -b -L /dev/null
     
     # 检测进程启动（3次重试）
-    local _retry=0 _crond_pid=""
-    while [ "$_retry" -lt 3 ]; do
+    _rce_retry=0; _rce_crond_pid=""
+    while [ "$_rce_retry" -lt 3 ] 2>/dev/null; do
         sleep 1
         
-        # 查找 crond 进程
-        _crond_pid=""
+        # 每次循环重置变量（防止残留值干扰）
+        _rce_crond_pid=""
         
         # 策略 1: 使用 pgrep
         if command -v pgrep >/dev/null 2>&1; then
-            _crond_pid=$(pgrep -f "crond -c $_cron_dir" 2>/dev/null)
-            # 提取第一行
-            case "$_crond_pid" in
+            _rce_crond_pid=$(pgrep -f "crond -c $_rce_cron_dir" 2>/dev/null)
+            # 提取第一行（处理多匹配）
+            case "$_rce_crond_pid" in
                 *$'\n'*) _crond_pid="${_crond_pid%%$'\n'*}" ;;
             esac
-            # 仅保留数字
-            _crond_pid="${_crond_pid%%[!0-9]*}"
+            # 仅保留数字（清理异常字符）
+            _rce_crond_pid="${_rce_crond_pid%%[!0-9]*}"
         fi
         
         # 策略 2: 回退到纯 Shell 遍历 /proc
-        if [ -z "$_crond_pid" ]; then
-            for _p in /proc/[0-9]*; do
-                [ -d "$_p" ] || continue
-                _p=${_p##*/}
+        if [ -z "$_rce_crond_pid" ]; then
+            _rce_p=""; _rce_pcmd=""
+            for _rce_p in /proc/[0-9]*; do
+                [ -d "$_rce_p" ] || continue
+                _rce_p=${_rce_p##*/}
                 
-                case "$_p" in *[!0-9]*) continue ;; esac
+                case "$_rce_p" in *[!0-9]*) continue ;; esac
                 
-                read -r _cmd < "/proc/$_p/cmdline" 2>/dev/null || continue
-                case "$_cmd" in
-                    *"crond -c $_cron_dir"*)
-                        _crond_pid="$_p"
+                _rce_pcmd=$(read_cmdline "/proc/$_rce_p/cmdline") || continue
+                case "$_rce_pcmd" in
+                    *"crond"*" -c $_rce_cron_dir"*|*"crond -c $_rce_cron_dir"*)
+                        _rce_crond_pid="$_rce_p"
                         break
                         ;;
                 esac
             done
         fi
         
-        if [ -n "$_crond_pid" ] && [ -d "/proc/$_crond_pid" ]; then
-            log_msg "Crond 引擎已启动 (PID: $_crond_pid)"
-            # 更新PID文件为crond进程，使action.sh能够管理Cron模式服务
-            if ! echo "$_crond_pid" > "$SVC_PID_FILE" 2>/dev/null; then
-                log_warn "PID文件写入失败: $SVC_PID_FILE"
+        # 找到有效 PID，立即返回
+        if [ -n "$_rce_crond_pid" ] && [ -d "/proc/$_rce_crond_pid" ]; then
+            log_msg "Crond 引擎已启动 [PID: $_rce_crond_pid]"
+            # 更新 PID 文件为 crond 进程，使 action.sh 能够管理 Cron 模式服务
+            if ! echo "$_rce_crond_pid" > "$SVC_PID_FILE" 2>/dev/null; then
+                log_warn "PID 文件写入失败: $SVC_PID_FILE"
             fi
-            return 0
+            
+            # Cron 模式设计哲学：托管给系统 crond，守护进程退出
+            log_msg "Cron 引擎已托管，守护进程退出"
+            
+            # 关键修复：禁用 trap，避免 cleanup_scheduler 删除 PID 文件
+            # Cron 模式下，PID 文件指向 crond 进程，必须保留
+            trap - EXIT INT TERM HUP QUIT ABRT
+            
+            exit 0
         fi
-        _retry=$((_retry + 1))
+        
+        _rce_retry=$((_rce_retry + 1))
     done
     
     # 启动失败，回退
@@ -558,109 +740,11 @@ run_cron_engine() {
     run_sleep_engine
 }
 
-# ==============================================================================
-# 入口逻辑
-# ==============================================================================
-
-
-if [ -f "$SVC_PID_FILE" ]; then
-    read -r _old_pid < "$SVC_PID_FILE" 2>/dev/null
-    if [ -n "$_old_pid" ] && is_integer "$_old_pid" && [ -d "/proc/$_old_pid" ] && [ "$_old_pid" != "$$" ]; then
-        # 验证进程类型：仅清理 service.sh 或 crond 进程（支持Cron模式）
-        if grep -q "service.sh" "/proc/$_old_pid/cmdline" 2>/dev/null || grep -q "crond -c" "/proc/$_old_pid/cmdline" 2>/dev/null; then
-            log_msg "清理旧实例 (PID: $_old_pid)"
-            kill "$_old_pid" 2>/dev/null
-            sleep 1
-            [ -d "/proc/$_old_pid" ] && kill -9 "$_old_pid" 2>/dev/null
-        else
-            log_warn "跳过非服务进程 (PID: $_old_pid)"
-        fi
-    fi
-fi
-
-_pid_dir="${SVC_PID_FILE%/*}"
-if [ ! -d "$_pid_dir" ]; then
-    mkdir -p "$_pid_dir" 2>/dev/null || {
-        log_err "无法创建目录: $_pid_dir"
-        exit 1
-    }
-fi
-
-if ! echo "$$" > "$SVC_PID_FILE" 2>/dev/null; then
-    log_err "无法写入PID文件: $SVC_PID_FILE"
-    exit 1
-fi
-
-# 开机清理锁
-rm -f "$LOCK_FILE"
-
-# 启动延迟：区分开机启动和手动重启
-if [ -r "/proc/uptime" ]; then
-    read -r _uptime _ < /proc/uptime 2>/dev/null
-    _uptime=${_uptime%%.*}
-else
-    _uptime=0
-fi
-is_integer "$_uptime" || _uptime=0
-
-if [ "$_uptime" -lt 300 ]; then
-    # 开机场景：系统运行时间 < 5分钟
-    
-    if [ "$(getprop sys.boot_completed)" = "1" ]; then
-        log_msg "检测到系统已就绪（uptime: ${_uptime}s），快速启动..."
-        sleep 3
-    else
-        log_msg "检测到开机启动（uptime: ${_uptime}s），等待系统稳定..."
-        
-        # 等待开机完成 (最多120秒)
-        _cnt=0
-        until [ "$(getprop sys.boot_completed)" = "1" ] || [ "$_cnt" -ge 60 ]; do
-            sleep 2
-            _cnt=$((_cnt + 1))
-        done
-        
-        if [ "$_cnt" -ge 60 ]; then
-            log_warn "等待开机超时，强制启动"
-        else
-            log_msg "开机广播已接收，额外缓冲 30秒 以待系统平稳..."
-            sleep 30
-        fi
-    fi
-else
-    # 手动重启场景：系统已运行 > 5分钟
-    log_msg "检测到手动重启（uptime: ${_uptime}s），快速启动..."
-fi
-
-if [ ! -f "$TARGET_COMMAND" ]; then
-    log_err "未找到目标: $TARGET_COMMAND"
-    exit 1
-fi
-
-if ! chmod 755 "$TARGET_COMMAND" 2>/dev/null; then
-    log_warn "无法设置执行权限"
-fi
+# 权限修正
+chmod 755 "$TARGET_COMMAND" 2>/dev/null
 
 # 启动引擎
 case "$SCHEDULE_MODE" in
-    "cron") 
-        run_cron_engine 
-        exit 0
-        ;;
-    *)      
-        # Sleep 模式: 后台运行，并更新PID文件为真实服务进程
-        run_sleep_engine &
-        _bg_pid=$!
-        
-        # 检测 PID 文件写入
-        if ! echo "$_bg_pid" > "$SVC_PID_FILE" 2>/dev/null; then
-            log_err "无法写入PID文件: $SVC_PID_FILE"
-            kill "$_bg_pid" 2>/dev/null
-            exit 1
-        fi
-        log_msg "Sleep 引擎已启动 (PID: $_bg_pid)"
-        exit 0
-        ;;
+    "cron") run_cron_engine ;;
+    *)       run_sleep_engine ;;
 esac
-
-log_err "引擎意外退出"
-exit 1

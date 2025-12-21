@@ -30,33 +30,40 @@ done
 
 # 进程清理（统一策略：Busybox 优先，系统命令降级）
 do_pkill() {
-    local _pat="$1" _pid _cmd _killed=0
+    _dpk_pat="$1"; _dpk_pid=""; _dpk_cmd=""; _dpk_killed=0
     
     # 策略 1: Busybox pkill（优先，更可靠）
     if [ -n "$BB_PATH" ] && [ -x "$BB_PATH" ]; then
-        "$BB_PATH" pkill -f "$_pat" 2>/dev/null && return 0
+        "$BB_PATH" pkill -f "$_dpk_pat" 2>/dev/null && return 0
     fi
     
     # 策略 2: 系统 pkill（降级）
     if command -v pkill >/dev/null 2>&1; then
-        pkill -f "$_pat" 2>/dev/null && return 0
+        pkill -f "$_dpk_pat" 2>/dev/null && return 0
     fi
     
     # 策略 3: 纯 Shell 回退（兜底）
-    for _p in /proc/[0-9]*; do
-        [ -d "$_p" ] || continue
+    for _dpk_p in /proc/[0-9]*; do
+        [ -d "$_dpk_p" ] || continue
         
-        _pid="${_p##*/}"
+        _dpk_pid="${_dpk_p##*/}"
         
         # 严格校验纯数字 (排除 /proc/8350_reg 等内核伪目录)
-        case "$_pid" in *[!0-9]*) continue ;; esac
+        case "$_dpk_pid" in *[!0-9]*) continue ;; esac
         
-        read -r _cmd < "$_p/cmdline" 2>/dev/null || continue
-        [ -z "$_cmd" ] && continue
+        # 使用 Busybox tr 或回退到 cat
+        if [ -n "$BB_PATH" ] && "$BB_PATH" --list 2>/dev/null | grep -q "^tr$"; then
+            _dpk_cmd=$("$BB_PATH" tr '\0' ' ' < "$_dpk_p/cmdline" 2>/dev/null) || continue
+        elif command -v tr >/dev/null 2>&1; then
+            _dpk_cmd=$(tr '\0' ' ' < "$_dpk_p/cmdline" 2>/dev/null) || continue
+        else
+            _dpk_cmd=$(cat "$_dpk_p/cmdline" 2>/dev/null) || continue
+        fi
+        [ -z "$_dpk_cmd" ] && continue
         
-        case "$_cmd" in
-            *"$_pat"*)
-                kill "$_pid" 2>/dev/null && _killed=$((_killed + 1))
+        case "$_dpk_cmd" in
+            *"$_dpk_pat"*)
+                kill "$_dpk_pid" 2>/dev/null && _dpk_killed=$((_dpk_killed + 1))
                 ;;
         esac
     done
@@ -71,13 +78,19 @@ if [ -f "$PID_FILE" ]; then
     read -r _pid < "$PID_FILE" 2>/dev/null
     
     if [ -n "$_pid" ] && is_integer "$_pid" && [ -d "/proc/$_pid" ]; then
-        _cmd=""
-        read -r _cmd < "/proc/$_pid/cmdline" 2>/dev/null
+        # 使用 Busybox tr 或回退到 cat
+        if [ -n "$BB_PATH" ] && "$BB_PATH" --list 2>/dev/null | grep -q "^tr$"; then
+            _cmd=$("$BB_PATH" tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null)
+        elif command -v tr >/dev/null 2>&1; then
+            _cmd=$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null)
+        else
+            _cmd=$(cat "/proc/$_pid/cmdline" 2>/dev/null)
+        fi
         
-        # 验证是否为服务进程 (cmdline 在 \0 处截断，仅获取进程名)
+        # 验证是否为服务进程
         case "$_cmd" in
             *"service.sh"*|*"crond"*)
-                log_msg "终止调度器 (PID: $_pid)"
+                log_msg "终止调度器 [PID: $_pid]"
                 kill -TERM "$_pid" 2>/dev/null
                 
                 _wait=0
@@ -92,7 +105,7 @@ if [ -f "$PID_FILE" ]; then
                 fi
                 ;;
             *)
-                log_msg "跳过非服务进程 (PID: $_pid)"
+                log_msg "跳过非服务进程 [PID: $_pid]"
                 ;;
         esac
     fi
@@ -102,6 +115,11 @@ fi
 # 2. 停止所有正在运行的优化任务 (防止孤儿进程)
 log_msg "停止所有 f2fsopt 任务..."
 do_pkill "f2fsopt"
+
+# 3. 停止 WebUI 相关进程
+log_msg "停止 WebUI 进程..."
+do_pkill "webui.sh"
+do_pkill "httpd.*f2fs_webui"
 
 # ==============================================================================
 # 清理 Crond 进程
@@ -146,8 +164,27 @@ if [ -d "$CRON_DIR" ]; then
     rm -rf "$CRON_DIR" 2>/dev/null && _cleaned=$((_cleaned + 1))
 fi
 
+# 清理 WebUI 临时文件
+_webui_cleaned=0
+
+# 清理模块目录下的 WebUI 临时文件
+_webui_tmp_dir="$MODDIR/.webui_tmp"
+if [ -d "$_webui_tmp_dir" ]; then
+    rm -rf "$_webui_tmp_dir" 2>/dev/null && {
+        _webui_cleaned=$((_webui_cleaned + 1))
+        log_msg "WebUI 临时目录已清理: $_webui_tmp_dir"
+    }
+fi
+
+
+
+if [ "$_webui_cleaned" -gt 0 ]; then
+    log_msg "WebUI 临时文件已清理 [${_webui_cleaned} 项]"
+    _cleaned=$((_cleaned + _webui_cleaned))
+fi
+
 if [ "$_cleaned" -gt 0 ]; then
-    log_msg "模块文件已清理 (${_cleaned} 项)"
+    log_msg "模块文件已清理 [${_cleaned} 项]"
 fi
 
 # ==============================================================================

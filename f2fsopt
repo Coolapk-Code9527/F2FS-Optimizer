@@ -4,6 +4,15 @@
 # ==============================================================================
 
 # ==============================================================================
+# 退出码定义
+# ==============================================================================
+readonly EXIT_SUCCESS=0        # 成功
+readonly EXIT_LOCK_CONFLICT=1  # 锁冲突（另一个实例正在运行）
+readonly EXIT_CONDITION=2      # 条件不满足（未充电/亮屏等）
+readonly EXIT_NO_ROOT=3        # 无 Root 权限
+readonly EXIT_TOOL_MISSING=127 # 必需工具缺失
+
+# ==============================================================================
 # 配置区域
 # ==============================================================================
 
@@ -17,12 +26,12 @@ readonly ONLY_CHARGING=false        # 仅充电时运行
 # GC 策略
 readonly ENABLE_TURBO_GC=true       # 启用极速GC
 readonly GC_MODE_PREF="1"           # GC模式: 1=前台 2=后台 (注: 内核可能返回 3/5 等扩展枚举，属正常)
-readonly GC_DIRTY_MIN=200           # 脏段阈值
+GC_DIRTY_MIN=200                    # 脏段阈值（可配置）
 readonly GC_TURBO_SLEEP=50          # 极速GC睡眠(ms)
 readonly GC_SAFE_SLEEP=500          # 安全GC睡眠(ms)
 readonly GC_MAX_SEC=500             # 最大运行时长(秒)
 readonly GC_STABLE_CNT=8           # 稳定计数
-readonly TRIM_TIMEOUT=500           # Trim超时(秒)
+TRIM_TIMEOUT=500                    # Trim超时(秒)（可配置）
 readonly GC_POLL=1                  # 轮询间隔(秒)
 
 # 扫描性能诊断
@@ -61,6 +70,9 @@ fi
 readonly SCRIPT_NAME="${0##*/}"
 START_TIME=$(date +%s)
 
+# 保存当前进程ID（避免在子shell中使用 $$ 导致的问题）
+CURRENT_PID=$$
+
 # 统计变量
 TOTAL_TRIM_KB=0
 TOTAL_GC_SEGS=0
@@ -73,7 +85,9 @@ COUNT_SCREEN_SKIP=0
 COUNT_SYS_API=0
 LIST_FAIL=""
 EXIT_CODE=0
-SM_FSTRIM_CALLED=false  # sm fstrim 全局调用标记
+SM_FSTRIM_CALLED=false       # sm fstrim 全局调用标记
+SM_IDLE_MAINT_CALLED=false   # sm idle-maint 全局调用标记
+LOG_WRITE_COUNT=0            # 日志写入计数器
 
 # 并发控制变量初始化
 HAS_ACQUIRED_WAKELOCK=false
@@ -99,34 +113,36 @@ init_command_proxy() {
     # 基础检查
     if [ -z "$BB_PATH" ] || [ ! -x "$BB_PATH" ]; then return 1; fi
     
-    local _cmd _bb_caps _type_out
+    _icp_cmd=""; _icp_bb_caps=""; _icp_type_out=""
     
-    _bb_caps=$("$BB_PATH" --list 2>/dev/null)
+    # 1. 获取 Busybox 能力清单并清洗格式
+    _icp_bb_caps=$("$BB_PATH" --list 2>/dev/null)
     
+    # 2. 批量过滤：Shell builtin/reserved
     # 预定义 Shell 核心命令黑名单，避免重复 type 调用
-    local _shell_builtins="echo cd pwd exit test true false [ : . break continue eval exec export readonly return set shift times trap unset"
+    _icp_shell_builtins="echo cd pwd exit test true false [ : . break continue eval exec export readonly return set shift times trap unset"
     
     # 3. 遍历 Busybox 支持的每个命令
-    for _cmd in $_bb_caps; do
+    for _icp_cmd in $_icp_bb_caps; do
         # [过滤器 A] 字符合法性检查
-        case "$_cmd" in
+        case "$_icp_cmd" in
             *[!a-zA-Z0-9_.-]*) continue ;;  # 排除特殊字符
             [0-9]*) continue ;;              # 排除数字开头
         esac
         
         # [过滤器 B] Shell 核心命令黑名单（快速路径）
-        case " $_shell_builtins " in
-            *" $_cmd "*) continue ;;
+        case " $_icp_shell_builtins " in
+            *" $_icp_cmd "*) continue ;;
         esac
         
         # [过滤器 C] type 检测兜底（仅对黑名单外的命令）
-        _type_out=$(type "$_cmd" 2>/dev/null)
-        case "$_type_out" in
+        _icp_type_out=$(type "$_icp_cmd" 2>/dev/null)
+        case "$_icp_type_out" in
             *builtin*|*reserved*|*keyword*) continue ;;
         esac
         
         # 4. 执行代理注册（安全命令）
-        eval "$_cmd() { '$BB_PATH' $_cmd \"\$@\"; }"
+        eval "$_icp_cmd() { '$BB_PATH' $_icp_cmd \"\$@\"; }"
     done
     
     # 5. 刷新 Shell 哈希表
@@ -144,6 +160,40 @@ HAS_FSTRIM=false
 command -v timeout >/dev/null 2>&1 && HAS_TIMEOUT=true
 command -v stat >/dev/null 2>&1 && HAS_STAT=true
 command -v fstrim >/dev/null 2>&1 && HAS_FSTRIM=true
+
+# 命令缓存变量（避免重复 type 调用）
+TIMEOUT_CMD="timeout"
+STAT_CMD="stat"
+FSTRIM_CMD="fstrim"
+
+# 初始化命令缓存（检测并解包代理函数）
+init_command_cache() {
+    _icc_type=""
+    
+    if [ "$HAS_TIMEOUT" = true ]; then
+        _icc_type=$(type timeout 2>/dev/null)
+        case "$_icc_type" in
+            *function*) [ -n "$BB_PATH" ] && TIMEOUT_CMD="$BB_PATH timeout" ;;
+        esac
+    fi
+    
+    if [ "$HAS_STAT" = true ]; then
+        _icc_type=$(type stat 2>/dev/null)
+        case "$_icc_type" in
+            *function*) [ -n "$BB_PATH" ] && STAT_CMD="$BB_PATH stat" ;;
+        esac
+    fi
+    
+    if [ "$HAS_FSTRIM" = true ]; then
+        _icc_type=$(type fstrim 2>/dev/null)
+        case "$_icc_type" in
+            *function*) [ -n "$BB_PATH" ] && FSTRIM_CMD="$BB_PATH fstrim" ;;
+        esac
+    fi
+}
+
+# 执行命令缓存初始化
+init_command_cache
 
 # ==============================================================================
 # 命令行接口
@@ -189,25 +239,79 @@ is_integer() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac }
 LOG_TIMESTAMP=""
 LOG_TIMESTAMP_EPOCH=0
 update_log_timestamp() {
-    local _now=$(date +%s) _elapsed=0
-    if is_integer "$_now" && is_integer "$LOG_TIMESTAMP_EPOCH"; then _elapsed=$((_now - LOG_TIMESTAMP_EPOCH)); else _elapsed=999; fi
-    if [ "$_elapsed" -ge 5 ] || [ -z "$LOG_TIMESTAMP" ]; then
+    _ult_now=$(date +%s); _ult_elapsed=0
+    if is_integer "$_ult_now" && is_integer "$LOG_TIMESTAMP_EPOCH"; then _ult_elapsed=$((_ult_now - LOG_TIMESTAMP_EPOCH)); else _ult_elapsed=999; fi
+    if [ "$_ult_elapsed" -ge 5 ] || [ -z "$LOG_TIMESTAMP" ]; then
         LOG_TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
-        is_integer "$_now" && LOG_TIMESTAMP_EPOCH=$_now
+        is_integer "$_ult_now" && LOG_TIMESTAMP_EPOCH=$_ult_now
     fi
 }
-log_msg() { update_log_timestamp; printf '%s %s\n' "$LOG_TIMESTAMP" "$1" >&2; }
+
+# 日志轮替
+check_log_size_robust() {
+    _clsr_log="${LOG_FILE:-$MODDIR/service.log}"
+    
+    [ ! -f "$_clsr_log" ] && return 0
+    
+    _clsr_size=0
+    if command -v stat >/dev/null 2>&1; then
+        _clsr_size=$(stat -c%s "$_clsr_log" 2>/dev/null) || _clsr_size=0
+    else
+        _clsr_size=$(wc -c < "$_clsr_log" 2>/dev/null) || _clsr_size=0
+    fi
+    
+    case "$_clsr_size" in *[!0-9]*) _clsr_size=0 ;; esac
+    
+    if [ "$_clsr_size" -gt 524288 ]; then  # 512KB
+        # 尝试轮替
+        if mv "$_clsr_log" "${_clsr_log}.bak" 2>/dev/null; then
+            if command -v tail >/dev/null 2>&1; then
+                if tail -n 200 "${_clsr_log}.bak" > "$_clsr_log" 2>/dev/null; then
+                    rm "${_clsr_log}.bak" 2>/dev/null
+                    return 0
+                fi
+            else
+                # 回退: tail 不可用时直接清空日志
+                : > "$_clsr_log"
+                rm "${_clsr_log}.bak" 2>/dev/null
+                return 0
+            fi
+        fi
+        
+        # 轮替失败，回退到 /dev/null
+        update_log_timestamp
+        printf '%s %s\n' "$LOG_TIMESTAMP" "⚠️ 日志轮替失败，回退到 /dev/null" >&2
+        exec 2>/dev/null
+    fi
+}
+
+log_msg() { 
+    update_log_timestamp
+    printf '%s %s\n' "$LOG_TIMESTAMP" "$1" >&2
+    
+    # 定期检查日志大小（每 10 次写入检查一次）
+    LOG_WRITE_COUNT=$((LOG_WRITE_COUNT + 1))
+    if [ "$((LOG_WRITE_COUNT % 10))" -eq 0 ]; then
+        check_log_size_robust
+    fi
+}
 
 # 获取毫秒时间戳
 get_timestamp_ms() {
-    local _sec _nsec _ms
+    _gtm_sec=""; _gtm_nsec=""; _gtm_ms=""
     # 优先使用高精度时间
-    if read -r _sec _nsec < /proc/uptime 2>/dev/null; then
+    if read -r _gtm_sec _gtm_nsec < /proc/uptime 2>/dev/null; then
         # 转换纳秒为毫秒：去掉小数点，取前三位
-        _nsec="${_nsec}000"  # 补齐位数
-        _ms="${_nsec%%.*}"   # 去小数
-        _ms="${_ms:0:3}"     # 取前3位
-        printf '%d%03d\n' "${_sec%%.*}" "${_ms:-0}"
+        _gtm_nsec="${_gtm_nsec#*.}"  # 提取小数部分
+        _gtm_nsec="${_gtm_nsec}000"  # 补齐位数
+        
+        # POSIX 兼容：使用循环逐位移除后缀（保留前3位）
+        _gtm_ms="$_gtm_nsec"
+        while [ "${#_gtm_ms}" -gt 3 ]; do
+            _gtm_ms="${_gtm_ms%?}"
+        done
+        
+        printf '%d%03d\n' "${_gtm_sec%%.*}" "${_gtm_ms:-0}"
     else
         # 回退：秒级精度
         printf '%d000\n' "$(date +%s)"
@@ -217,209 +321,254 @@ get_timestamp_ms() {
 read_first_line() {
     eval "$1=''"
     [ -r "$2" ] 2>/dev/null || return 1
-    local _tmp_line=""
-    read -r _tmp_line < "$2" 2>/dev/null || return 1
-    eval "$1=\$_tmp_line"
+    _rfl_tmp_line=""
+    read -r _rfl_tmp_line < "$2" 2>/dev/null || return 1
+    eval "$1=\$_rfl_tmp_line"
 }
 
 decode_path() {
-    local _path="$1"
-    if [ "${_path#*\\040}" != "$_path" ]; then printf '%b' "$_path"; else printf '%s\n' "$_path"; fi
+    _dp_path="$1"; _dp_out=""; _dp_c=""; _dp_oct=""
+    
+    # 快速路径：无转义直接返回
+    case "$_dp_path" in
+        *\\[0-7][0-7][0-7]*) ;;
+        *) printf '%s\n' "$_dp_path"; return 0 ;;
+    esac
+    
+    # 安全解析：仅处理常见八进制转义
+    while [ -n "$_dp_path" ]; do
+        case "$_dp_path" in
+            \\[0-7][0-7][0-7]*)
+                _dp_oct="${_dp_path#\\}"
+                _dp_oct="${_dp_oct%%[!0-7]*}"
+                _dp_c="${_dp_oct#[0-7]}"
+                _dp_c="${_dp_c#[0-7]}"
+                _dp_oct="${_dp_oct%"$_dp_c"}"
+                
+                case "$_dp_oct" in
+                    040) _dp_out="$_dp_out " ;;      # 空格
+                    011) _dp_out="$_dp_out	" ;;    # Tab
+                    012) _dp_out="$_dp_out
+" ;;                                           # 换行
+                    *) _dp_out="$_dp_out\\$_dp_oct" ;;  # 其他保留原样
+                esac
+                
+                _dp_path="${_dp_path#\\$_dp_oct}"
+                ;;
+            *\\*)
+                _dp_out="$_dp_out${_dp_path%%\\*}"
+                _dp_path="${_dp_path#*\\}"
+                ;;
+            *)
+                _dp_out="$_dp_out$_dp_path"
+                break
+                ;;
+        esac
+    done
+    printf '%s\n' "$_dp_out"
 }
 
 is_path_ignored() {
-    local _path="$1" _prefix
-    for _prefix in $IGNORE_PREFIXES; do
-        case "$_path" in "$_prefix"|"${_prefix}"/*) return 0 ;; esac
+    _ipi_path="$1"; _ipi_prefix=""
+    for _ipi_prefix in $IGNORE_PREFIXES; do
+        case "$_ipi_path" in "$_ipi_prefix"|"${_ipi_prefix}"/*) return 0 ;; esac
     done
     return 1
 }
 
 # 更新模块描述
 update_magisk_ui() {
-    local _msg="$1"
+    _umu_msg="$1"
     [ "$ENABLE_MAGISK_UI" = true ] || return 0
     [ -f "$MODDIR/module.prop" ] || return 0
-    local _final_msg="$_msg 🕒日期:$(date "+%Y-%m-%d %H:%M:%S")"
-    local _tmp="$MODDIR/module.prop.tmp"
+    _umu_final_msg="$_umu_msg 🕒日期:$(date "+%Y-%m-%d %H:%M:%S")"
+    _umu_tmp="$MODDIR/module.prop.tmp"
     {
-        while IFS= read -r _line || [ -n "$_line" ]; do
-            case "$_line" in
+        while IFS= read -r _umu_line || [ -n "$_umu_line" ]; do
+            case "$_umu_line" in
                 description=*)
-                    printf 'description=%s\n' "$_final_msg"
+                    printf 'description=%s\n' "$_umu_final_msg"
                     ;;
                 *)
-                    printf '%s\n' "$_line"
+                    printf '%s\n' "$_umu_line"
                     ;;
             esac
         done < "$MODDIR/module.prop"
-    } > "$_tmp" 2>/dev/null && mv "$_tmp" "$MODDIR/module.prop" 2>/dev/null
+    } > "$_umu_tmp" 2>/dev/null && mv "$_umu_tmp" "$MODDIR/module.prop" 2>/dev/null
     # 清理失败残留
-    rm -f "$_tmp" 2>/dev/null
+    rm -f "$_umu_tmp" 2>/dev/null
 }
 
 # 解析设备路径：处理符号链接
 resolve_dev_path() {
-    local _path="$1" _limit=10 _target _dir _out
+    _rdp_path="$1"; _rdp_limit=10; _rdp_target=""; _rdp_dir=""; _rdp_out=""
     
     # 快速路径: readlink -f
-    _out=$(readlink -f "$_path" 2>/dev/null)
-    [ -e "$_out" ] && { printf '%s\n' "$_out"; return 0; }
+    _rdp_out=$(readlink -f "$_rdp_path" 2>/dev/null)
+    [ -e "$_rdp_out" ] && { printf '%s\n' "$_rdp_out"; return 0; }
     
     # 回退路径: 手动递归解析
-    while [ -L "$_path" ] && [ "$_limit" -gt 0 ]; do
-        _target=$(readlink "$_path" 2>/dev/null)
+    while [ -L "$_rdp_path" ] && [ "$_rdp_limit" -gt 0 ]; do
+        _rdp_target=$(readlink "$_rdp_path" 2>/dev/null)
         # 兼容性回退: ls -l 解析
-        if [ -z "$_target" ]; then
-            local _ls_out=$(ls -l "$_path" 2>/dev/null)
-            case "$_ls_out" in *" -> "*) _target="${_ls_out##* -> }" ;; *) break ;; esac
+        if [ -z "$_rdp_target" ]; then
+            _rdp_ls_out=$(ls -l "$_rdp_path" 2>/dev/null)
+            case "$_rdp_ls_out" in *" -> "*) _rdp_target="${_rdp_ls_out##* -> }" ;; *) break ;; esac
         fi
         
-        _target="${_target## }"; _target="${_target%% }"
-        [ -z "$_target" ] && break
+        _rdp_target="${_rdp_target## }"; _rdp_target="${_rdp_target%% }"
+        [ -z "$_rdp_target" ] && break
         
-        case "$_target" in 
-            /*) _path="$_target" ;;
+        case "$_rdp_target" in 
+            /*) _rdp_path="$_rdp_target" ;;
             *) 
-                _dir="${_path%/*}"
-                [ "$_dir" = "$_path" ] && _dir="."
-                _path="$_dir/$_target"
+                _rdp_dir="${_rdp_path%/*}"
+                [ "$_rdp_dir" = "$_rdp_path" ] && _rdp_dir="."
+                _rdp_path="$_rdp_dir/$_rdp_target"
             ;;
         esac
-        _limit=$((_limit - 1))
+        _rdp_limit=$((_rdp_limit - 1))
     done
     
+    # 记录递归深度超限情况（用于调试）
+    if [ -L "$_rdp_path" ] && [ "$_rdp_limit" -eq 0 ]; then
+        # 递归深度达到限制，可能存在循环链接
+        # 注意：生产环境不输出日志，仅在调试时启用
+        : # 占位符
+    fi
+    
     # 简单的规范化 (移除 /./，循环直到不包含此模式)
-    while case "$_path" in */./*) true;; *) false;; esac; do
-        _path="${_path%%/./*}/${_path#*/./}"
+    while case "$_rdp_path" in */./*) true;; *) false;; esac; do
+        _rdp_path="${_rdp_path%%/./*}/${_rdp_path#*/./}"
     done
-    [ -e "$_path" ] && printf '%s\n' "$_path"
+    [ -e "$_rdp_path" ] && printf '%s\n' "$_rdp_path"
 }
 
 # 获取挂载点设备ID
 get_mountinfo_id() {
-    local _target_mnt="$1" _decoded_mnt
+    _gmi_target_mnt="$1"; _gmi_decoded_mnt=""
     [ -r "/proc/self/mountinfo" ] || return 1
-    while read -r _id _par _devid _root _mnt _rest; do
-        _decoded_mnt=$(decode_path "$_mnt")
-        if [ "$_decoded_mnt" = "$_target_mnt" ]; then printf '%s\n' "$_devid"; return 0; fi
+    while read -r _gmi_id _gmi_par _gmi_devid _gmi_root _gmi_mnt _gmi_rest; do
+        _gmi_decoded_mnt=$(decode_path "$_gmi_mnt")
+        if [ "$_gmi_decoded_mnt" = "$_gmi_target_mnt" ]; then printf '%s\n' "$_gmi_devid"; return 0; fi
     done < /proc/self/mountinfo
     return 1
 }
 
 # 获取设备唯一指纹
 get_device_fingerprint() {
-    local _path="$1" _mnt="$2" _real_path _bname _id=""
+    _gdf_path="$1"; _gdf_mnt="$2"; _gdf_real_path=""; _gdf_bname=""; _gdf_id=""
     
-    _real_path=$(resolve_dev_path "$_path")
+    _gdf_real_path=$(resolve_dev_path "$_gdf_path")
     
-    # 优先级 1: Stat
-    if [ "$HAS_STAT" = true ] && [ -e "$_real_path" ]; then
-        local _maj _min _stat_out
+    # 优先级 1: Stat 
+    if [ "$HAS_STAT" = true ] && [ -e "$_gdf_real_path" ]; then
+        _gdf_maj=""; _gdf_min=""; _gdf_stat_out=""; _gdf_maj_dec=""; _gdf_min_dec=""
         
+        # 尝试使用 timeout（如果可用），否则直接执行
         if [ "$HAS_TIMEOUT" = true ]; then
-            # 智能解包：检测 timeout 和 stat 是否为代理函数
-            local _timeout_cmd="timeout" _stat_cmd="stat" _type_out
-            
-            _type_out=$(type timeout 2>/dev/null)
-            case "$_type_out" in
-                *function*) [ -n "$BB_PATH" ] && _timeout_cmd="$BB_PATH timeout" ;;
-            esac
-            
-            _type_out=$(type stat 2>/dev/null)
-            case "$_type_out" in
-                *function*) [ -n "$BB_PATH" ] && _stat_cmd="$BB_PATH stat" ;;
-            esac
-            
-            # 执行 (不加引号，允许空格分词)
-            _stat_out=$($_timeout_cmd 2 $_stat_cmd -L -c '%t %T' "$_real_path" 2>/dev/null)
+            _gdf_stat_out=$($TIMEOUT_CMD 2 $STAT_CMD -L -c '%t %T' "$_gdf_real_path" 2>/dev/null)
+            # 如果 timeout 失败（返回码 124 表示超时），回退到无 timeout 版本
+            if [ $? -eq 124 ] 2>/dev/null; then
+                _gdf_stat_out=$($STAT_CMD -L -c '%t %T' "$_gdf_real_path" 2>/dev/null)
+            fi
         else
-            _stat_out=$(stat -L -c '%t %T' "$_real_path" 2>/dev/null)
+            _gdf_stat_out=$($STAT_CMD -L -c '%t %T' "$_gdf_real_path" 2>/dev/null)
         fi
         
-        if [ -n "$_stat_out" ]; then
-            _maj="${_stat_out%% *}"
-            _min="${_stat_out##* }"
-            case "$_maj$_min" in *[!0-9a-fA-F]*) ;; *)
-                printf "%d:%d" "0x$_maj" "0x$_min"
-                return 0
+        if [ -n "$_gdf_stat_out" ]; then
+            _gdf_maj="${_gdf_stat_out%% *}"
+            _gdf_min="${_gdf_stat_out##* }"
+            
+            # 验证十六进制格式
+            case "$_gdf_maj$_gdf_min" in *[!0-9a-fA-F]*) ;; *)
+                # 尝试十六进制转换（验证 Shell 兼容性）
+                _gdf_maj_dec=$(printf '%d' "0x$_gdf_maj" 2>/dev/null) || _gdf_maj_dec=""
+                _gdf_min_dec=$(printf '%d' "0x$_gdf_min" 2>/dev/null) || _gdf_min_dec=""
+                
+                # 仅在转换成功时返回
+                if [ -n "$_gdf_maj_dec" ] && [ -n "$_gdf_min_dec" ]; then
+                    printf "%d:%d" "$_gdf_maj_dec" "$_gdf_min_dec"
+                    return 0
+                fi
             ;; esac
         fi
     fi
 
     # 优先级 2: Mountinfo
-    if [ -n "$_mnt" ]; then
-        _id=$(get_mountinfo_id "$_mnt")
-        if [ -n "$_id" ]; then printf '%s\n' "$_id"; return 0; fi
+    if [ -n "$_gdf_mnt" ]; then
+        _gdf_id=$(get_mountinfo_id "$_gdf_mnt")
+        if [ -n "$_gdf_id" ]; then printf '%s\n' "$_gdf_id"; return 0; fi
     fi
     
     # 优先级 3: Sysfs
-    [ ! -e "$_real_path" ] && return 1
-    _bname="${_real_path##*/}"
-    if [ -r "/sys/class/block/$_bname/dev" ]; then
-        read -r _id < "/sys/class/block/$_bname/dev"
-        _id="${_id%% *}"
-        if [ -n "$_id" ]; then printf '%s\n' "$_id"; return 0; fi
+    [ ! -e "$_gdf_real_path" ] && return 1
+    _gdf_bname="${_gdf_real_path##*/}"
+    if [ -r "/sys/class/block/$_gdf_bname/dev" ]; then
+        read -r _gdf_id < "/sys/class/block/$_gdf_bname/dev"
+        _gdf_id="${_gdf_id%% *}"
+        if [ -n "$_gdf_id" ]; then printf '%s\n' "$_gdf_id"; return 0; fi
     fi
     
     # 最后的手段：路径哈希
-    printf '%s\n' "path_$_real_path"
+    printf '%s\n' "path_$_gdf_real_path"
     return 0
 }
 
 # 解析 Trim 输出字节数
 parse_trim_bytes() {
-    local _str="$1" _val
-    case "$_str" in
+    _ptb_str="$1"; _ptb_val=""
+    case "$_ptb_str" in
         *" bytes"*) 
-            _val="${_str%% bytes*}"
+            _ptb_val="${_ptb_str%% bytes*}"
             # 移除非数字前缀
-            _val="${_val##*[!0-9]}" 
+            _ptb_val="${_ptb_val##*[!0-9]}" 
             ;;
         *) 
-            local _word _num=0 _clean
-            for _word in $_str; do
-                _clean="$_word"
+            _ptb_word=""; _ptb_num=0; _ptb_clean=""
+            for _ptb_word in $_ptb_str; do
+                _ptb_clean="$_ptb_word"
                 # 清理常见后缀和标点
-                _clean="${_clean%:}"
-                _clean="${_clean%;}"
-                _clean="${_clean%,}"
-                _clean="${_clean%bytes}"
-                _clean="${_clean%B}"
+                _ptb_clean="${_ptb_clean%:}"
+                _ptb_clean="${_ptb_clean%;}"
+                _ptb_clean="${_ptb_clean%,}"
+                _ptb_clean="${_ptb_clean%bytes}"
+                _ptb_clean="${_ptb_clean%B}"
                 
-                case "$_clean" in 
+                case "$_ptb_clean" in 
                     ''|*[!0-9]*) continue ;; 
                     *) 
                         # 防御性检查：防止32位整数溢出（最大值 2147483647 = 10位）
-                        if [ "${#_clean}" -le 10 ]; then
+                        if [ "${#_ptb_clean}" -le 10 ]; then
                             # 32位安全范围：安全比较
-                            if [ "$_clean" -gt "$_num" ] 2>/dev/null; then
-                                _num="$_clean"
+                            if [ "$_ptb_clean" -gt "$_ptb_num" ] 2>/dev/null; then
+                                _ptb_num="$_ptb_clean"
                             fi
-                        elif [ "${#_clean}" -le 15 ]; then
+                        elif [ "${#_ptb_clean}" -le 15 ]; then
                             # 大数字直接采用（假定为真实字节数）
-                            _num="$_clean"
+                            _ptb_num="$_ptb_clean"
                         fi
                         # 超过15位：丢弃（可能是异常输出）
                     ;;
                 esac
             done
-            _val="$_num" ;;
+            _ptb_val="$_ptb_num" ;;
     esac
-    is_integer "$_val" && printf '%s\n' "$_val" || printf '%s\n' "0"
+    is_integer "$_ptb_val" && printf '%s\n' "$_ptb_val" || printf '%s\n' "0"
 }
 
 # ==============================================================================
 # execute_trim_robust (智能解包 + 多级回退)
+# 智能解包代理函数 + sm fstrim 回退 + 详细日志
 # ==============================================================================
 execute_trim_robust() {
-    local _mnt="$1" _out="" _ret=1
+    _etr_mnt="$1"; _etr_out=""; _etr_ret=1
     
     # 结果有效性校验
-    _is_valid() {
-        local _r="$1" _o="$2"
-        [ "$_r" -eq 0 ] && return 0
-        case "$_o" in
+    _etr_is_valid() {
+        _etr_iv_r="$1"; _etr_iv_o="$2"
+        [ "$_etr_iv_r" -eq 0 ] && return 0
+        case "$_etr_iv_o" in
             *"bytes"*|*"trimmed"*|*"B "*|*" KB"*|*" MB"*) return 0 ;;
             "") return 0 ;;
         esac
@@ -430,70 +579,44 @@ execute_trim_robust() {
     # 优先级 1: timeout + fstrim
     # ------------------------------------------------------
     if [ "$HAS_TIMEOUT" = true ] && [ "$HAS_FSTRIM" = true ]; then
-        local _cmd_prefix="" _target_bin="fstrim" _type_out
+        _etr_out=$($TIMEOUT_CMD $TRIM_TIMEOUT $FSTRIM_CMD -v "$_etr_mnt" 2>&1)
+        _etr_ret=$?
         
-        # 解包 fstrim (如果是代理函数)
-        _type_out=$(type fstrim 2>/dev/null)
-        case "$_type_out" in
-            *function*) 
-                [ -n "$BB_PATH" ] && _target_bin="$BB_PATH fstrim" 
-                ;;
-        esac
-        
-        # 解包 timeout
-        _type_out=$(type timeout 2>/dev/null)
-        case "$_type_out" in
-            *function*) 
-                _cmd_prefix="$BB_PATH timeout $TRIM_TIMEOUT" 
-                ;;
-            *)
-                _cmd_prefix="timeout $TRIM_TIMEOUT" 
-                ;;
-        esac
-        
-        # 执行 (不加引号，允许空格分词)
-        if [ -n "$_cmd_prefix" ]; then
-            _out=$($_cmd_prefix $_target_bin -v "$_mnt" 2>&1)
-        else
-            _out=$($_target_bin -v "$_mnt" 2>&1)
-        fi
-        _ret=$?
-        
-        if _is_valid "$_ret" "$_out"; then
-            printf '%s\n' "$_out"
+        if _etr_is_valid "$_etr_ret" "$_etr_out"; then
+            printf '%s\n' "$_etr_out"
             return 0
         fi
         
         # 失败诊断
-        log_msg "        ├─ ⚠️ timeout+fstrim 失败 - 退出码: $_ret"
-        [ -n "$_out" ] && log_msg "        │        └─ 输出: $_out"
+        log_msg "    ├─ ⚠️ timeout+fstrim 失败 [退出码: $_etr_ret]"
+        [ -n "$_etr_out" ] && log_msg "            └─ 输出: $_etr_out"
     fi
     
     # ------------------------------------------------------
     # 优先级 2: fstrim 直接调用
     # ------------------------------------------------------
     if [ "$HAS_FSTRIM" = true ]; then
-        _out=$(fstrim -v "$_mnt" 2>&1)
-        _ret=$?
+        _etr_out=$($FSTRIM_CMD -v "$_etr_mnt" 2>&1)
+        _etr_ret=$?
         
-        if _is_valid "$_ret" "$_out"; then
-            printf '%s\n' "$_out"
+        if _etr_is_valid "$_etr_ret" "$_etr_out"; then
+            printf '%s\n' "$_etr_out"
             return 0
         fi
         
-        log_msg "        ├─ ⚠️ fstrim 失败 - 退出码: $_ret"
-        [ -n "$_out" ] && log_msg "        │        └─ 输出: $_out"
+        log_msg "    ├─ ⚠️ fstrim 失败 [退出码: $_etr_ret]"
+        [ -n "$_etr_out" ] && log_msg "            └─ 输出: $_etr_out"
     fi
     
     # ------------------------------------------------------
-    # 优先级 3: Busybox fstrim 裸调
+    # 优先级 3: Busybox fstrim 裸调（最后手段）
     # ------------------------------------------------------
     if [ -n "$BB_PATH" ]; then
-        _out=$("$BB_PATH" fstrim -v "$_mnt" 2>&1)
-        _ret=$?
+        _etr_out=$("$BB_PATH" fstrim -v "$_etr_mnt" 2>&1)
+        _etr_ret=$?
         
-        if _is_valid "$_ret" "$_out"; then
-            printf '%s\n' "$_out"
+        if _etr_is_valid "$_etr_ret" "$_etr_out"; then
+            printf '%s\n' "$_etr_out"
             return 0
         fi
     fi
@@ -502,23 +625,23 @@ execute_trim_robust() {
     # 优先级 4: sm fstrim (Android 专用，全局 Trim)
     # ------------------------------------------------------
     if [ "$SM_FSTRIM_CALLED" = false ] && command -v sm >/dev/null 2>&1; then
-        log_msg "        ├─ 尝试 Android sm fstrim (全局)..."
-        _out=$(sm fstrim 2>&1)
-        _ret=$?
+        log_msg "    ├─ 尝试 Android sm fstrim [全局]..."
+        _etr_out=$(sm fstrim 2>&1)
+        _etr_ret=$?
         SM_FSTRIM_CALLED=true
         
-        if [ "$_ret" -eq 0 ]; then
-            log_msg "        │        └─ ✅ sm fstrim 成功 (已处理所有分区)"
-            printf '%s\n' "$_out"
+        if [ "$_etr_ret" -eq 0 ]; then
+            log_msg "            └─ ✅ 成功 [已处理所有分区]"
+            printf '%s\n' "$_etr_out"
             return 0
         fi
         
-        log_msg "        │        └─ ⚠️ sm fstrim 失败 - 退出码: $_ret"
-        [ -n "$_out" ] && log_msg "        │        └─ 输出: $_out"
+        log_msg "            └─ ⚠️ 失败 [退出码: $_etr_ret]"
+        [ -n "$_etr_out" ] && log_msg "            └─ 输出: $_etr_out"
     fi
     
-    log_msg "        └─ ❌ 所有 Trim 方法均失败"
-    printf '%s\n' "${_out:-[Trim 不可用]}"
+    log_msg "    └─ ❌ 所有 Trim 方法均失败"
+    printf '%s\n' "${_etr_out:-[Trim 不可用]}"
     return 127
 }
 
@@ -530,33 +653,33 @@ execute_trim_robust() {
 
 # 屏幕状态检测 (动态初始化)
 init_screen_check() {
-    local _node _val
+    _isc_node=""; _isc_val=""
 
     # 策略 1: DRM 节点 (最快/最准)
-    for _node in /sys/class/drm/card*/enabled; do
-        [ -e "$_node" ] || continue
-        [ -r "$_node" ] || continue
-        read -r _val < "$_node" 2>/dev/null
-        if [ "$_val" = "enabled" ] || [ "$_val" = "disabled" ]; then
-            eval "is_screen_on() { read -r _v < \"$_node\" 2>/dev/null; [ \"\$_v\" = \"enabled\" ]; }"
+    for _isc_node in /sys/class/drm/card*/enabled; do
+        [ -e "$_isc_node" ] || continue
+        [ -r "$_isc_node" ] || continue
+        read -r _isc_val < "$_isc_node" 2>/dev/null
+        if [ "$_isc_val" = "enabled" ] || [ "$_isc_val" = "disabled" ]; then
+            eval "is_screen_on() { read -r _iso_v < \"$_isc_node\" 2>/dev/null; [ \"\$_iso_v\" = \"enabled\" ]; }"
             return 0
         fi
     done
 
     # 策略 2: 背光亮度 (通用)
-    for _node in /sys/class/backlight/*/brightness; do
-        [ -e "$_node" ] || continue
-        [ -r "$_node" ] || continue
-        read -r _val < "$_node" 2>/dev/null
-        if is_integer "$_val"; then
-            [ "$_val" -gt 0 ] && return 0
+    for _isc_node in /sys/class/backlight/*/brightness; do
+        [ -e "$_isc_node" ] || continue
+        [ -r "$_isc_node" ] || continue
+        read -r _isc_val < "$_isc_node" 2>/dev/null
+        if is_integer "$_isc_val"; then
+            [ "$_isc_val" -gt 0 ] && return 0
         fi
     done
 
     # 策略 3: API 状态 (回退)
     if command -v getprop >/dev/null 2>&1; then
-        _val=$(getprop sys.display.state 2>/dev/null)
-        if [ -n "$_val" ]; then
+        _isc_val=$(getprop sys.display.state 2>/dev/null)
+        if [ -n "$_isc_val" ]; then
             is_screen_on() { 
                 case "$(getprop sys.display.state 2>/dev/null)" in ON|DOZE) return 0 ;; *) return 1 ;; esac 
             }
@@ -569,15 +692,15 @@ init_screen_check() {
     _LAST_SCREEN_STATE=1
 
     is_screen_on() {
-        local _now
-        _now=$(date +%s)
-        if [ $((_now - _LAST_SCREEN_CHECK)) -lt 5 ]; then
+        _iso_now=""
+        _iso_now=$(date +%s)
+        if [ $((_iso_now - _LAST_SCREEN_CHECK)) -lt 5 ]; then
             return $_LAST_SCREEN_STATE
         fi
-        _LAST_SCREEN_CHECK=$_now
+        _LAST_SCREEN_CHECK=$_iso_now
         if dumpsys power 2>/dev/null | {
-            while IFS= read -r _line; do
-                case "$_line" in
+            while IFS= read -r _iso_line; do
+                case "$_iso_line" in
                     *"mWakefulness=Awake"*)
                         exit 0 
                         ;;
@@ -598,66 +721,227 @@ init_screen_check() {
 init_screen_check
 
 is_charging() {
-    local _val _node
+    _ic_val=""; _ic_node=""
     if [ -f "/sys/class/power_supply/battery/status" ]; then
-        read_first_line _val "/sys/class/power_supply/battery/status"
-        case "$_val" in Charging|Full) return 0 ;; esac
+        read_first_line _ic_val "/sys/class/power_supply/battery/status"
+        case "$_ic_val" in Charging|Full) return 0 ;; esac
     fi
-    for _node in /sys/class/power_supply/*/online; do
-        [ -e "$_node" ] || continue
-        read_first_line _val "$_node"; [ "$_val" = "1" ] && return 0
+    for _ic_node in /sys/class/power_supply/*/online; do
+        [ -e "$_ic_node" ] || continue
+        read_first_line _ic_val "$_ic_node"; [ "$_ic_val" = "1" ] && return 0
     done
     return 1
 }
 
 acquire_lock() {
-    if mkdir "$LOCK_DIR" 2>/dev/null; then echo "$$" > "$LOCK_PID_FILE"; return 0; fi
-    if [ ! -s "$LOCK_PID_FILE" ]; then
-        rm -rf "$LOCK_DIR" 2>/dev/null
-        mkdir "$LOCK_DIR" 2>/dev/null && echo "$$" > "$LOCK_PID_FILE" && return 0
-    fi
-    local _pid _cmd
-    read_first_line _pid "$LOCK_PID_FILE"
-    if [ -n "$_pid" ] && [ -d "/proc/$_pid" ]; then
-        read -r _cmd < "/proc/$_pid/cmdline" 2>/dev/null
-        case "$_cmd" in
-            *"$SCRIPT_NAME"*)
+    _al_retry=0; _al_max_retry=3
+    _al_start_time=$(date +%s)
+    
+    while [ "$_al_retry" -lt "$_al_max_retry" ]; do
+        # 原子操作：mkdir 成功即获取锁
+        if mkdir "$LOCK_DIR" 2>/dev/null; then
+            echo "$CURRENT_PID" > "$LOCK_PID_FILE"
+            # 创建时间戳文件
+            date +%s > "$LOCK_DIR/timestamp" 2>/dev/null
+            return 0
+        fi
+        
+        # 验证锁文件完整性
+        if [ ! -f "$LOCK_PID_FILE" ]; then
+            # 锁目录存在但PID文件缺失，可能是创建中断
+            sleep 1
+            [ ! -f "$LOCK_PID_FILE" ] && rm -rf "$LOCK_DIR" 2>/dev/null
+            _al_retry=$((_al_retry + 1))
+            continue
+        fi
+        
+        # 读取并验证PID
+        _al_pid=""
+        read_first_line _al_pid "$LOCK_PID_FILE"
+        
+        # PID 空值和格式验证
+        if [ -z "$_al_pid" ] || ! is_integer "$_al_pid"; then
+            rm -rf "$LOCK_DIR" 2>/dev/null
+            _al_retry=$((_al_retry + 1))
+            continue
+        fi
+        
+        # 进程存活检查
+        if [ ! -d "/proc/$_al_pid" ]; then
+            # 进程已死，清理陈旧锁
+            rm -rf "$LOCK_DIR" 2>/dev/null
+            _al_retry=$((_al_retry + 1))
+            continue
+        fi
+        
+        # 精确匹配：检查进程是否真的是 f2fsopt
+        _al_cmd=""
+        read -r _al_cmd < "/proc/$_al_pid/cmdline" 2>/dev/null
+        # POSIX 兼容：使用参数扩展分割而非字符类
+        _al_cmd="${_al_cmd%% *}"  # 提取第一个参数（空格分割）
+        _al_cmd="${_al_cmd%%	*}"  # 提取第一个参数（制表符分割）
+        case "$_al_cmd" in
+            */"$SCRIPT_NAME"|"$SCRIPT_NAME")
+                # 确实是同名脚本在运行
+                # 记录锁持有者信息
+                _al_lock_time=""
+                if [ -f "$LOCK_DIR/timestamp" ]; then
+                    read -r _al_lock_time < "$LOCK_DIR/timestamp" 2>/dev/null
+                    _al_now=$(date +%s)
+                    _al_duration=$((_al_now - _al_lock_time))
+                    log_msg "锁被占用 [PID:$_al_pid, 持续:${_al_duration}秒]"
+                else
+                    log_msg "锁被占用 [PID:$_al_pid]"
+                fi
                 return 1
                 ;;
+            *)
+                # PID被复用，清理陈旧锁
+                rm -rf "$LOCK_DIR" 2>/dev/null
+                _al_retry=$((_al_retry + 1))
+                continue
+                ;;
         esac
-    fi
-    rm -rf "$LOCK_DIR" 2>/dev/null
-    mkdir "$LOCK_DIR" 2>/dev/null && echo "$$" > "$LOCK_PID_FILE"
-}
-
-
-cleanup() {
-    local _code="${1:-$EXIT_CODE}"
-    trap - EXIT TERM INT HUP QUIT ABRT
-    
-    # 尝试清理所有子进程
-    for _p in /proc/[0-9]*; do
-        [ -d "$_p" ] || continue
-        _p=${_p##*/}
-        
-        case "$_p" in *[!0-9]*) continue ;; esac
-
-        [ "$_p" = "$$" ] && continue
-        
-        read -r _ _ _ _ppid _ < "/proc/$_p/stat" 2>/dev/null || continue
-        [ "$_ppid" = "$$" ] && kill "$_p" 2>/dev/null
     done
     
-    command -v pkill >/dev/null 2>&1 && pkill -P $$ >/dev/null 2>&1
+    # 重试耗尽
+    _al_end_time=$(date +%s)
+    _al_total_time=$((_al_end_time - _al_start_time))
+    log_msg "锁获取失败 [重试:$_al_max_retry次, 耗时:${_al_total_time}秒]"
+    return 1
+}
+# GC 状态恢复
+restore_gc_state_robust() {
+    _rgsr_node="$1"
+    _rgsr_val="$2"
     
-    if [ "$HAS_ACQUIRED_WAKELOCK" = true ]; then echo "$WAKE_LOCK_ID" > /sys/power/wake_unlock 2>/dev/null; fi
-    [ -n "$ACTIVE_GC_NODE" ] && echo "$RESTORE_GC_VAL" > "$ACTIVE_GC_NODE" 2>/dev/null
-    [ -n "$ACTIVE_SLEEP_NODE" ] && echo "$RESTORE_SLEEP_VAL" > "$ACTIVE_SLEEP_NODE" 2>/dev/null
+    # 尝试 1: 直接恢复原值
+    if echo "$_rgsr_val" > "$_rgsr_node" 2>/dev/null; then
+        return 0
+    fi
     
-    rm -rf "$LOCK_DIR" 2>/dev/null
+    # 尝试 2: 恢复为 0（安全值）
+    if echo "0" > "$_rgsr_node" 2>/dev/null; then
+        log_msg "⚠️ GC 状态使用备用值恢复 [0]"
+        return 0
+    fi
     
-    if [ "$_code" -ne 0 ]; then log_msg "❌ 退出 (Code: $_code)"; fi
-    exit "$_code"
+    # 尝试 3: 恢复为字符串枚举
+    for _rgsr_fallback in "GC_NORMAL" ""; do
+        if echo "$_rgsr_fallback" > "$_rgsr_node" 2>/dev/null; then
+            log_msg "⚠️ GC 状态使用备用值恢复 [$_rgsr_fallback]"
+            return 0
+        fi
+    done
+    
+    return 1
+}
+
+# 子进程清理
+cleanup_child_processes() {
+    _ccp_cleaned=0
+    
+    # 遍历 /proc 查找子进程
+    for _ccp_p in /proc/[0-9]*; do
+        [ -d "$_ccp_p" ] || continue
+        _ccp_pid="${_ccp_p##*/}"
+        
+        case "$_ccp_pid" in *[!0-9]*) continue ;; esac
+        [ "$_ccp_pid" = "$CURRENT_PID" ] && continue
+        
+        # 读取父进程 PID
+        read -r _ _ _ _ccp_ppid _ < "$_ccp_p/stat" 2>/dev/null || continue
+        
+        if [ "$_ccp_ppid" = "$CURRENT_PID" ]; then
+            # 优雅终止
+            if kill -TERM "$_ccp_pid" 2>/dev/null; then
+                _ccp_cleaned=$((_ccp_cleaned + 1))
+                sleep 1
+                # 强制终止（如果还存活）
+                [ -d "$_ccp_p" ] && kill -KILL "$_ccp_pid" 2>/dev/null
+            else
+                log_msg "⚠️ 子进程清理失败 [PID:$_ccp_pid]"
+            fi
+        fi
+    done
+    
+    [ "$_ccp_cleaned" -gt 0 ] && log_msg "清理了 $_ccp_cleaned 个子进程"
+}
+
+cleanup() {
+    _cu_code="${1:-$EXIT_CODE}"
+    trap - EXIT TERM INT HUP QUIT ABRT
+    
+    # 子进程清理
+    cleanup_child_processes
+    
+    # 释放唤醒锁
+    if [ "$HAS_ACQUIRED_WAKELOCK" = true ]; then
+        if ! echo "$WAKE_LOCK_ID" > /sys/power/wake_unlock 2>/dev/null; then
+            log_msg "⚠️ 清理警告: 唤醒锁释放失败 [ID:$WAKE_LOCK_ID, errno:$?]"
+        fi
+    fi
+    
+    # GC 状态恢复
+    if [ -n "$ACTIVE_GC_NODE" ] && [ -n "$RESTORE_GC_VAL" ]; then
+        if ! restore_gc_state_robust "$ACTIVE_GC_NODE" "$RESTORE_GC_VAL"; then
+            log_msg "❌ 清理失败: GC 状态无法恢复"
+            log_msg "   节点: $ACTIVE_GC_NODE"
+            log_msg "   期望值: $RESTORE_GC_VAL"
+            log_msg "   当前值: $(cat "$ACTIVE_GC_NODE" 2>/dev/null || echo "无法读取")"
+            log_msg "   手动修复: echo $RESTORE_GC_VAL > $ACTIVE_GC_NODE"
+        fi
+    fi
+    
+    # sleep_time 恢复
+    if [ -n "$ACTIVE_SLEEP_NODE" ] && [ -n "$RESTORE_SLEEP_VAL" ]; then
+        if ! echo "$RESTORE_SLEEP_VAL" > "$ACTIVE_SLEEP_NODE" 2>/dev/null; then
+            log_msg "⚠️ 清理警告: sleep_time 恢复失败 [$ACTIVE_SLEEP_NODE=$RESTORE_SLEEP_VAL]"
+        fi
+    fi
+    
+    # 锁目录清理
+    if ! rm -rf "$LOCK_DIR" 2>/dev/null; then
+        _cu_err=$?
+        log_msg "⚠️ 清理警告: 锁目录删除失败 [路径:$LOCK_DIR, errno:$_cu_err]"
+        # 尝试诊断原因
+        if [ ! -w "${LOCK_DIR%/*}" ]; then
+            log_msg "   原因: 父目录无写权限"
+        elif command -v tail >/dev/null 2>&1 && command -v awk >/dev/null 2>&1; then
+            _cu_avail=$(df "$LOCK_DIR" 2>/dev/null | tail -1 | awk '{print $4}')
+            [ "$_cu_avail" = "0" ] && log_msg "   原因: 磁盘空间不足"
+        fi
+    fi
+    
+    if [ "$_cu_code" -ne 0 ]; then 
+        log_msg "❌ 退出 [Code: $_cu_code]"
+    fi
+    exit "$_cu_code"
+}
+
+# ==============================================================================
+# 配置验证
+# ==============================================================================
+
+# 配置验证
+validate_config() {
+    _vc_errors=0
+    
+    # 验证 GC_DIRTY_MIN
+    if ! is_integer "$GC_DIRTY_MIN" || [ "$GC_DIRTY_MIN" -lt 0 ] || [ "$GC_DIRTY_MIN" -gt 10000 ]; then
+        log_msg "⚠️ 配置错误: GC_DIRTY_MIN=$GC_DIRTY_MIN 不在 [0, 10000] 范围内，使用默认值 200"
+        GC_DIRTY_MIN=200
+        _vc_errors=$((_vc_errors + 1))
+    fi
+    
+    # 验证 TRIM_TIMEOUT
+    if ! is_integer "$TRIM_TIMEOUT" || [ "$TRIM_TIMEOUT" -lt 1 ] || [ "$TRIM_TIMEOUT" -gt 3600 ]; then
+        log_msg "⚠️ 配置错误: TRIM_TIMEOUT=$TRIM_TIMEOUT 不在 [1, 3600] 范围内，使用默认值 500"
+        TRIM_TIMEOUT=500
+        _vc_errors=$((_vc_errors + 1))
+    fi
+    
+    return "$_vc_errors"
 }
 
 # ==============================================================================
@@ -665,51 +949,90 @@ cleanup() {
 # ==============================================================================
 
 do_system_action() {
-    local _path="$1" _type="$2"
+    _dsa_path="$1"; _dsa_type="$2"
     if command -v sm >/dev/null 2>&1; then
-        if [ "$_type" = "trim" ]; then
-            sm fstrim >/dev/null 2>&1
+        if [ "$_dsa_type" = "trim" ]; then
+            # 检查 sm fstrim 是否已被调用（全局操作，一次即可）
+            if [ "$SM_FSTRIM_CALLED" = true ]; then
+                log_msg "            └─ ℹ️ 已在其他分区执行，跳过重复调用"
+                return 0
+            fi
+            
+            # 调用 sm fstrim 并记录（保留输出用于诊断）
+            _dsa_sm_out=""; _dsa_sm_ret=0
+            _dsa_sm_out=$(sm fstrim 2>&1)
+            _dsa_sm_ret=$?
+            SM_FSTRIM_CALLED=true
+            
+            if [ "$_dsa_sm_ret" -eq 0 ]; then
+                log_msg "            └─ ✅ sm fstrim 成功 [全局Trim]"
+                [ -n "$_dsa_sm_out" ] && log_msg "                   输出: $_dsa_sm_out"
+                return 0
+            else
+                log_msg "            └─ ⚠️ sm fstrim 失败 [退出码: $_dsa_sm_ret]"
+                [ -n "$_dsa_sm_out" ] && log_msg "                   输出: $_dsa_sm_out"
+                return 1
+            fi
         else
-            sm idle-maint run >/dev/null 2>&1
+            # GC: sm idle-maint run（全局操作，避免重复调用）
+            if [ "$SM_IDLE_MAINT_CALLED" = true ]; then
+                log_msg "            └─ ℹ️ 已在其他分区执行，跳过重复调用"
+                return 0
+            fi
+            
+            # 调用 sm idle-maint 并记录（保留输出用于诊断）
+            _dsa_sm_out=""; _dsa_sm_ret=0
+            _dsa_sm_out=$(sm idle-maint run 2>&1)
+            _dsa_sm_ret=$?
+            SM_IDLE_MAINT_CALLED=true
             COUNT_SYS_API=$((COUNT_SYS_API + 1))
+            
+            if [ "$_dsa_sm_ret" -eq 0 ]; then
+                log_msg "            └─ ✅ sm idle-maint 成功 [全局维护]"
+                [ -n "$_dsa_sm_out" ] && log_msg "                   输出: $_dsa_sm_out"
+                return 0
+            else
+                log_msg "            └─ ⚠️ sm idle-maint 失败 [退出码: $_dsa_sm_ret]"
+                [ -n "$_dsa_sm_out" ] && log_msg "                   输出: $_dsa_sm_out"
+                return 1
+            fi
         fi
-        return 0
     fi
     return 1
 }
 
 # 查找 F2FS sysfs 节点: 目录名 > 精确匹配 > 模糊匹配
 find_f2fs_node() {
-    local _real_dev="$1" _bname="${1##*/}" _target_mm="" _iname
-    if [ -r "/sys/class/block/$_bname/dev" ]; then
-        read_first_line _target_mm "/sys/class/block/$_bname/dev"
-        _target_mm="${_target_mm%% *}"
+    _ffn_real_dev="$1"; _ffn_bname="${1##*/}"; _ffn_target_mm=""; _ffn_iname=""
+    if [ -r "/sys/class/block/$_ffn_bname/dev" ]; then
+        read_first_line _ffn_target_mm "/sys/class/block/$_ffn_bname/dev"
+        _ffn_target_mm="${_ffn_target_mm%% *}"
     fi
     # 优先级 1: 目录名
-    [ -d "/sys/fs/f2fs/$_bname" ] && { printf '%s\n' "/sys/fs/f2fs/$_bname"; return 0; }
-    [ -d "/sys/fs/mifs/$_bname" ] && { printf '%s\n' "/sys/fs/mifs/$_bname"; return 0; }
+    [ -d "/sys/fs/f2fs/$_ffn_bname" ] && { printf '%s\n' "/sys/fs/f2fs/$_ffn_bname"; return 0; }
+    [ -d "/sys/fs/mifs/$_ffn_bname" ] && { printf '%s\n' "/sys/fs/mifs/$_ffn_bname"; return 0; }
     # 优先级 2: 精确匹配 dev_name
-    for _base in /sys/fs/f2fs /sys/fs/mifs; do
-        [ -d "$_base" ] || continue
-        for _d in "$_base"/*; do
-            [ -e "$_d" ] || continue
-            [ -f "$_d/dev_name" ] || continue
-            read_first_line _iname "$_d/dev_name"
-            _iname="${_iname%% *}"
-            [ "$_iname" = "$_bname" ] && { printf '%s\n' "$_d"; return 0; }
-            [ "$_iname" = "/dev/block/$_bname" ] && { printf '%s\n' "$_d"; return 0; }
-            if [ -n "$_target_mm" ]; then [ "$_iname" = "$_target_mm" ] && { printf '%s\n' "$_d"; return 0; }; fi
+    for _ffn_base in /sys/fs/f2fs /sys/fs/mifs; do
+        [ -d "$_ffn_base" ] || continue
+        for _ffn_d in "$_ffn_base"/*; do
+            [ -e "$_ffn_d" ] || continue
+            [ -f "$_ffn_d/dev_name" ] || continue
+            read_first_line _ffn_iname "$_ffn_d/dev_name"
+            _ffn_iname="${_ffn_iname%% *}"
+            [ "$_ffn_iname" = "$_ffn_bname" ] && { printf '%s\n' "$_ffn_d"; return 0; }
+            [ "$_ffn_iname" = "/dev/block/$_ffn_bname" ] && { printf '%s\n' "$_ffn_d"; return 0; }
+            if [ -n "$_ffn_target_mm" ]; then [ "$_ffn_iname" = "$_ffn_target_mm" ] && { printf '%s\n' "$_ffn_d"; return 0; }; fi
         done
     done
     # 优先级 3: 模糊匹配
-    for _base in /sys/fs/f2fs /sys/fs/mifs; do
-        [ -d "$_base" ] || continue
-        for _d in "$_base"/*; do
-            [ -e "$_d" ] || continue
-            [ -f "$_d/dev_name" ] || continue
-            read_first_line _iname "$_d/dev_name"
-            case "$_iname" in 
-                *"/${_bname}"|"${_bname}") printf '%s\n' "$_d"; return 0 ;; 
+    for _ffn_base in /sys/fs/f2fs /sys/fs/mifs; do
+        [ -d "$_ffn_base" ] || continue
+        for _ffn_d in "$_ffn_base"/*; do
+            [ -e "$_ffn_d" ] || continue
+            [ -f "$_ffn_d/dev_name" ] || continue
+            read_first_line _ffn_iname "$_ffn_d/dev_name"
+            case "$_ffn_iname" in 
+                *"/${_ffn_bname}"|"${_ffn_bname}") printf '%s\n' "$_ffn_d"; return 0 ;; 
             esac
         done
     done
@@ -717,85 +1040,107 @@ find_f2fs_node() {
 }
 
 process_target() {
-    local _mnt="$1" _raw_dev="$2" _fstype="$3"
-    local _real_dev _bname _node _is_healthy=false _s_dirty="0"
+    _pt_mnt="$1"; _pt_raw_dev="$2"; _pt_fstype="$3"
+    _pt_real_dev=""; _pt_bname=""; _pt_node=""; _pt_is_healthy=false; _pt_s_dirty="0"
     
-    _real_dev=$(resolve_dev_path "$_raw_dev")
-    _bname="${_real_dev##*/}"
-    _node=$(find_f2fs_node "$_real_dev")
+    # 参数空值检查
+    if [ -z "$_pt_mnt" ] || [ -z "$_pt_raw_dev" ] || [ -z "$_pt_fstype" ]; then
+        log_msg "⚠️ 跳过: 参数不完整 [mnt=$_pt_mnt, dev=$_pt_raw_dev, fs=$_pt_fstype]"
+        return 1
+    fi
+    
+    _pt_real_dev=$(resolve_dev_path "$_pt_raw_dev")
+    
+    # 设备路径验证
+    if [ -z "$_pt_real_dev" ]; then
+        log_msg "⚠️ 跳过: 无法解析设备路径 [$_pt_raw_dev]"
+        return 1
+    fi
+    
+    _pt_bname="${_pt_real_dev##*/}"
+    _pt_node=$(find_f2fs_node "$_pt_real_dev")
 
-    log_msg "⏩ 目标: $_mnt [$_fstype]"
+    log_msg "⏩ 目标: $_pt_mnt [$_pt_fstype]"
     
     # 获取设备号（用于调试）
-    local _dbg_mm=""
-    if [ -r "/sys/class/block/$_bname/dev" ]; then
-        read -r _dbg_mm < "/sys/class/block/$_bname/dev" 2>/dev/null
-        _dbg_mm="${_dbg_mm%% *}"
+    _pt_dbg_mm=""
+    if [ -r "/sys/class/block/$_pt_bname/dev" ]; then
+        read -r _pt_dbg_mm < "/sys/class/block/$_pt_bname/dev" 2>/dev/null
+        _pt_dbg_mm="${_pt_dbg_mm%% *}"
     fi
-    log_msg "        ├─ Dev: $_raw_dev -> $_bname [ID:${_dbg_mm:-Unknown}]"
+    log_msg "    ├─ 设备: $_pt_raw_dev -> $_pt_bname [ID:${_pt_dbg_mm:-Unknown}]"
 
-    if [ -n "$_node" ] && [ -f "$_node/dirty_segments" ]; then
-        read_first_line _s_dirty "$_node/dirty_segments"
-        if is_integer "$_s_dirty" && [ "$_s_dirty" -lt "$GC_DIRTY_MIN" ]; then _is_healthy=true; fi
+    if [ -n "$_pt_node" ] && [ -f "$_pt_node/dirty_segments" ]; then
+        read_first_line _pt_s_dirty "$_pt_node/dirty_segments"
+        if is_integer "$_pt_s_dirty" && [ "$_pt_s_dirty" -lt "$GC_DIRTY_MIN" ]; then _pt_is_healthy=true; fi
     fi
 
     # Trim 执行逻辑
     if [ "$TRIM" = true ]; then
         if [ "$STOP_ON_SCREEN_ON" = true ] && is_screen_on; then
-            log_msg "        ├─ Trim: 🚫 跳过(亮屏)"
+            log_msg "    ├─ Trim: 🚫 跳过 [亮屏]"
             COUNT_SCREEN_SKIP=$((COUNT_SCREEN_SKIP + 1))
-        elif [ "$ENABLE_SMART_TRIM" = true ] && [ "$_is_healthy" = true ]; then
-            log_msg "        ├─ Trim: 💤 跳过(健康|Dirty:$_s_dirty)"
+        elif [ "$ENABLE_SMART_TRIM" = true ] && [ "$_pt_is_healthy" = true ]; then
+            log_msg "    ├─ Trim: 💤 跳过 [健康 Dirty:$_pt_s_dirty]"
             COUNT_TRIM_SKIP=$((COUNT_TRIM_SKIP + 1))
         elif [ "$USE_SYSTEM_API" = true ]; then
-            do_system_action "$_mnt" "trim"
-            log_msg "        ├─ Trim: ⚠️ 系统托管(强制)"
+            do_system_action "$_pt_mnt" "trim"
+            log_msg "    ├─ Trim: ⚠️ 系统托管 [强制]"
         else
             # 同步脏数据
-            log_msg "        ├─ 正在同步磁盘缓存 (sync)..."
+            log_msg "    ├─ 同步: 正在同步磁盘缓存..."
             
             # 后台 sync 并超时监控
             sync &
-            local _sync_pid=$!
-            local _wait=0
-            while kill -0 "$_sync_pid" 2>/dev/null; do
-                sleep 1
-                _wait=$((_wait + 1))
-                if [ "$_wait" -ge 60 ]; then
-                    log_msg "        ├─ ⚠️ Sync 超时 (60s)，跳过等待"
+            _pt_sync_pid=$!
+            _pt_wait=0
+            _pt_sync_timeout=30  # 30 秒超时
+            
+            while kill -0 "$_pt_sync_pid" 2>/dev/null; do
+                if [ "$_pt_wait" -ge "$_pt_sync_timeout" ]; then
+                    # 超时，强制终止
+                    kill -KILL "$_pt_sync_pid" 2>/dev/null
+                    log_msg "    ├─ ⚠️ sync 超时 [${_pt_sync_timeout}秒]，强制终止"
                     break
                 fi
+                sleep 1
+                _pt_wait=$((_pt_wait + 1))
             done
             
-            local _out _ret _bytes _kb
-            _out=$(execute_trim_robust "$_mnt")
-            _ret=$?
+            # 等待 sync 进程退出
+            wait "$_pt_sync_pid" 2>/dev/null
             
-            if [ "$_ret" -eq 0 ] 2>/dev/null; then
+            log_msg "    ├─ 同步完成 [耗时:${_pt_wait}秒]"
+            
+            _pt_out=""; _pt_ret=0; _pt_bytes=0; _pt_kb=0
+            _pt_out=$(execute_trim_robust "$_pt_mnt")
+            _pt_ret=$?
+            
+            if [ "$_pt_ret" -eq 0 ] 2>/dev/null; then
                 COUNT_TRIM_RUN=$((COUNT_TRIM_RUN + 1))
-                _bytes=$(parse_trim_bytes "$_out")
+                _pt_bytes=$(parse_trim_bytes "$_pt_out")
                 
-                if [ "$_bytes" -gt 0 ] 2>/dev/null; then
-                    _kb=$(( (_bytes + 1023) / 1024 ))
+                if [ "$_pt_bytes" -gt 0 ] 2>/dev/null; then
+                    _pt_kb=$(( (_pt_bytes + 1023) / 1024 ))
                     if [ ${#TOTAL_TRIM_KB} -le 9 ] 2>/dev/null; then
-                        TOTAL_TRIM_KB=$((TOTAL_TRIM_KB + _kb))
+                        TOTAL_TRIM_KB=$((TOTAL_TRIM_KB + _pt_kb))
                     fi
-                    log_msg "        ├─ 结果: ✅ ${_kb} KB"
+                    log_msg "    └─ 结果: ✅ ${_pt_kb} KB"
                 else
                     # 0字节情况：记录并显示（可能是 discard/F2FS/SELinux）
                     COUNT_TRIM_ZERO=$((COUNT_TRIM_ZERO + 1))
-                    log_msg "        ├─ 结果: ✅ 0 B (无需清理)"
-                    [ -n "$_out" ] && log_msg "        │        └─ 原始: $_out"
+                    log_msg "    └─ 结果: ✅ 0 B [无需清理]"
+                    [ -n "$_pt_out" ] && log_msg "            └─ 原始: $_pt_out"
                 fi
             else
                 # Trim 失败：显示详细错误（调试用）
-                log_msg "        ├─ Trim: ❌ 最终失败 (退出码: $_ret)"
-                [ -n "$_out" ] && log_msg "        │        └─ 输出: $_out"
+                log_msg "    ├─ Trim: ❌ 最终失败 [退出码: $_pt_ret]"
+                [ -n "$_pt_out" ] && log_msg "            └─ 输出: $_pt_out"
                 
-                if ! do_system_action "$_mnt" "trim"; then
-                    LIST_FAIL="$LIST_FAIL $_mnt(Trim)"
+                if ! do_system_action "$_pt_mnt" "trim"; then
+                    LIST_FAIL="$LIST_FAIL $_pt_mnt:Trim"
                 else
-                    log_msg "        ├─ Trim: ⚠️ 系统API托管 (补救成功)"
+                    log_msg "    └─ Trim: ⚠️ 系统API托管 [补救成功]"
                 fi
             fi
         fi
@@ -803,34 +1148,34 @@ process_target() {
 
     # GC 执行逻辑
     if [ "$GC" = true ]; then
-        case "$_fstype" in f2fs|mifs) ;; *) return 0 ;; esac
+        case "$_pt_fstype" in f2fs|mifs) ;; *) return 0 ;; esac
         
-        local _ctrl=""
-        if [ -n "$_node" ]; then
-            [ -w "${_node}/gc_urgent_mode" ] && _ctrl="${_node}/gc_urgent_mode"
-            [ -z "$_ctrl" ] && [ -w "${_node}/gc_urgent" ] && _ctrl="${_node}/gc_urgent"
+        _pt_ctrl=""
+        if [ -n "$_pt_node" ]; then
+            [ -w "${_pt_node}/gc_urgent_mode" ] && _pt_ctrl="${_pt_node}/gc_urgent_mode"
+            [ -z "$_pt_ctrl" ] && [ -w "${_pt_node}/gc_urgent" ] && _pt_ctrl="${_pt_node}/gc_urgent"
         fi
 
         if [ "$USE_SYSTEM_API" = true ]; then
-            do_system_action "$_mnt" "gc"
-            log_msg "        └─ GC:   ⚠️ 系统托管(强制)"
+            do_system_action "$_pt_mnt" "gc"
+            log_msg "    └─ GC: ⚠️ 系统托管 [强制]"
             return
         fi
 
-        if [ -z "$_ctrl" ]; then
-            do_system_action "$_mnt" "gc"
-            log_msg "        └─ GC:   ⚠️ 系统托管(无接口)"
+        if [ -z "$_pt_ctrl" ]; then
+            do_system_action "$_pt_mnt" "gc"
+            log_msg "    └─ GC: ⚠️ 系统托管 [无接口]"
             return
         fi
 
-        if [ "$ENABLE_SMART_GC" = true ] && [ "$_is_healthy" = true ]; then
-            log_msg "        └─ GC:   💤 跳过(健康)"
+        if [ "$ENABLE_SMART_GC" = true ] && [ "$_pt_is_healthy" = true ]; then
+            log_msg "    └─ GC: 💤 跳过 [健康]"
             COUNT_GC_SKIP=$((COUNT_GC_SKIP + 1))
             return
         fi
 
         if [ "$STOP_ON_SCREEN_ON" = true ] && is_screen_on; then
-            log_msg "        └─ GC:   🚫 跳过(亮屏)"
+            log_msg "    └─ GC: 🚫 跳过 [亮屏]"
             COUNT_SCREEN_SKIP=$((COUNT_SCREEN_SKIP + 1))
             return 0
         fi
@@ -843,7 +1188,7 @@ process_target() {
         HAS_ACQUIRED_WAKELOCK=true
         
         # 保存GC原始值（全局变量，用于cleanup恢复）
-        read_first_line RESTORE_GC_VAL "$_ctrl"
+        read_first_line RESTORE_GC_VAL "$_pt_ctrl"
         
         # 状态自愈：防止进入永久 GC 的死循环
         # 正常值应该是 0，任何非 0 值都视为异常残留
@@ -853,103 +1198,114 @@ process_target() {
                 RESTORE_GC_VAL="0"
                 ;;
             *[!0-9]*) 
-                # 字符串值（如 GC_URGENT_HIGH）
-                log_msg "      ⚠️ 检测到异常残留状态 [${RESTORE_GC_VAL}]，已重置为 0"
-                RESTORE_GC_VAL="0" 
+                # 字符串值（如 GC_URGENT_HIGH / GC_NORMAL）
+                # ⚠️ 保留原始值用于恢复，但先尝试重置为 0
+                _pt_original_val="$RESTORE_GC_VAL"
+                log_msg "    ├─ ⚠️ 检测到异常残留状态 [${_pt_original_val}]，尝试重置"
+                if echo "0" > "$_pt_ctrl" 2>/dev/null; then
+                    RESTORE_GC_VAL="0"
+                else
+                    # 写入失败，可能内核只接受字符串枚举，保留原值
+                    log_msg "            └─ ⚠️ 重置失败，保留原始值用于恢复"
+                    RESTORE_GC_VAL="$_pt_original_val"
+                fi
                 ;;
             *) 
                 # 非 0 数字（如 1/2/3/5）
-                log_msg "      ⚠️ 检测到异常残留状态 [${RESTORE_GC_VAL}]，已重置为 0"
+                log_msg "    ├─ ⚠️ 检测到异常残留状态 [${RESTORE_GC_VAL}]，已重置"
+                echo "0" > "$_pt_ctrl" 2>/dev/null || log_msg "            └─ ⚠️ 重置失败"
+                # 无论重置成功与否，恢复时都用 0（避免再次进入异常状态）
                 RESTORE_GC_VAL="0" 
                 ;;
         esac
         
-        ACTIVE_GC_NODE="$_ctrl"
+        ACTIVE_GC_NODE="$_pt_ctrl"
         
         # Turbo GC：尝试设置 sleep_time（可选，失败不影响GC）
-        if [ "$ENABLE_TURBO_GC" = true ] && [ -f "$_node/gc_urgent_sleep_time" ]; then
-            local _snode="$_node/gc_urgent_sleep_time"
-            read_first_line RESTORE_SLEEP_VAL "$_snode"
+        if [ "$ENABLE_TURBO_GC" = true ] && [ -f "$_pt_node/gc_urgent_sleep_time" ]; then
+            _pt_snode="$_pt_node/gc_urgent_sleep_time"
+            read_first_line RESTORE_SLEEP_VAL "$_pt_snode"
             
             # 真实写入测试（避免 -w 误判）
-            if echo "$GC_TURBO_SLEEP" > "$_snode" 2>/dev/null; then
-                ACTIVE_SLEEP_NODE="$_snode"
+            if echo "$GC_TURBO_SLEEP" > "$_pt_snode" 2>/dev/null; then
+                ACTIVE_SLEEP_NODE="$_pt_snode"
             else
                 # 权限不足时记录并继续（使用内核默认值）
-                log_msg "      ⚠️ sleep_time 不可写，使用内核默认值"
+                # 提示：手动诊断命令 ls -lZ /sys/fs/f2fs/*/gc_urgent_sleep_time
+                log_msg "    ├─ ⚠️ sleep_time 不可写，使用内核默认值"
                 RESTORE_SLEEP_VAL=""
             fi
         fi
         
-        local _mode_ok=false
-        echo "$GC_MODE_PREF" > "$_ctrl" 2>/dev/null && _mode_ok=true
-        if [ "$_mode_ok" = false ]; then
-             local _alt="2"; [ "$GC_MODE_PREF" = "2" ] && _alt="1"
-             echo "$_alt" > "$_ctrl" 2>/dev/null && _mode_ok=true
+        _pt_mode_ok=false
+        echo "$GC_MODE_PREF" > "$_pt_ctrl" 2>/dev/null && _pt_mode_ok=true
+        if [ "$_pt_mode_ok" = false ]; then
+             _pt_alt="2"; [ "$GC_MODE_PREF" = "2" ] && _pt_alt="1"
+             echo "$_pt_alt" > "$_pt_ctrl" 2>/dev/null && _pt_mode_ok=true
         fi
 
-        if [ "$_mode_ok" = false ]; then
+        if [ "$_pt_mode_ok" = false ]; then
             ACTIVE_GC_NODE=""; RESTORE_GC_VAL=""; ACTIVE_SLEEP_NODE=""; RESTORE_SLEEP_VAL=""
             echo "$WAKE_LOCK_ID" > /sys/power/wake_unlock 2>/dev/null
             HAS_ACQUIRED_WAKELOCK=false
-            log_msg "        └─ GC:   ❌ 激活失败 -> 系统托管"
-            do_system_action "$_mnt" "gc"
+            log_msg "    └─ GC: ❌ 激活失败 [切换系统托管]"
+            do_system_action "$_pt_mnt" "gc"
             return
         fi
         
-        log_msg "        └─ GC:   🚀 GC回收中，请耐心等待回收完毕... (Dirty: $_s_dirty)"
+        log_msg "    └─ GC: 🚀 回收中... [初始Dirty: $_pt_s_dirty]"
         
         # [调试] 记录GC参数（显示写入值，避免内核枚举混淆）
-        local _set_mode="$GC_MODE_PREF"
-        local _set_sleep="${GC_TURBO_SLEEP:-默认}"
-        local _act_mode="" _act_sleep=""
+        _pt_set_mode="$GC_MODE_PREF"
+        _pt_set_sleep="${GC_TURBO_SLEEP:-默认}"
+        _pt_act_mode=""; _pt_act_sleep=""
         
         # [调试] 读取内核实际值作为参考
-        read_first_line _act_mode "$_ctrl"
-        [ -n "$ACTIVE_SLEEP_NODE" ] && read_first_line _act_sleep "$ACTIVE_SLEEP_NODE"
+        read_first_line _pt_act_mode "$_pt_ctrl"
+        [ -n "$ACTIVE_SLEEP_NODE" ] && read_first_line _pt_act_sleep "$ACTIVE_SLEEP_NODE"
         
         # 主日志：显示脚本设置值
         if [ -n "$ACTIVE_SLEEP_NODE" ]; then
-            log_msg "        └─ 参数: Mode=${_set_mode}, Sleep=${_set_sleep}ms"
+            log_msg "            ├─ 参数: Mode=${_pt_set_mode}, Sleep=${_pt_set_sleep}ms"
         else
-            log_msg "        └─ 参数: Mode=${_set_mode}, Sleep=内核默认"
+            log_msg "            ├─ 参数: Mode=${_pt_set_mode}, Sleep=内核默认"
         fi
         
         # [调试] 内核值与设置值不同时显示
-        if [ -n "$_act_mode" ] && [ "$_act_mode" != "$_set_mode" ]; then
-            log_msg "                 └─ 内核实际: Mode=$_act_mode"
+        if [ -n "$_pt_act_mode" ] && [ "$_pt_act_mode" != "$_pt_set_mode" ]; then
+            log_msg "            └─ 内核实际: Mode=$_pt_act_mode"
         fi
         
         # GC 轮询循环
-        local _interrupted=false _read_success=false _prev_cur
-        local _time=0 _cur=$_s_dirty _stable=0 _last=$_s_dirty
+        _pt_interrupted=false; _pt_read_success=false; _pt_prev_cur=""
+        _pt_time=0; _pt_cur=$_pt_s_dirty; _pt_stable=0; _pt_last=$_pt_s_dirty
         
-        while [ "$_time" -lt "$GC_MAX_SEC" ]; do
+        while [ "$_pt_time" -lt "$GC_MAX_SEC" ]; do
             if [ "$STOP_ON_SCREEN_ON" = true ] && is_screen_on; then 
-                 log_msg "      ⚠️ 亮屏中断"
+                 log_msg "            └─ ⚠️ 亮屏中断"
                  COUNT_SCREEN_SKIP=$((COUNT_SCREEN_SKIP + 1))
-                 _interrupted=true
+                 _pt_interrupted=true
                  break
             fi
             
             sleep "$GC_POLL"
-            [ -f "$_node/dirty_segments" ] || break
+            [ -f "$_pt_node/dirty_segments" ] || break
             
-            _prev_cur=$_cur
-            if read_first_line _cur "$_node/dirty_segments" && is_integer "$_cur"; then
-                _read_success=true
-                if [ "$_cur" -lt "$_last" ]; then 
-                    _stable=0
-                    _last=$_cur
+            _pt_prev_cur=$_pt_cur
+            if read_first_line _pt_cur "$_pt_node/dirty_segments" && is_integer "$_pt_cur"; then
+                _pt_read_success=true
+                if [ "$_pt_cur" -lt "$_pt_last" ]; then 
+                    _pt_stable=0
+                    _pt_last=$_pt_cur
                 else 
-                    _stable=$((_stable + 1))
+                    _pt_stable=$((_pt_stable + 1))
                 fi
             else
-                _cur=$_prev_cur
+                _pt_cur=$_pt_prev_cur
             fi
             
-            if [ "$_stable" -ge "$GC_STABLE_CNT" ]; then break; fi
-            _time=$((_time + 1))
+            if [ "$_pt_stable" -ge "$GC_STABLE_CNT" ]; then break; fi
+            _pt_time=$((_pt_time + 1))
         done
 
         [ -n "$RESTORE_GC_VAL" ] && echo "$RESTORE_GC_VAL" > "$ACTIVE_GC_NODE" 2>/dev/null
@@ -958,21 +1314,24 @@ process_target() {
         HAS_ACQUIRED_WAKELOCK=false
         ACTIVE_GC_NODE=""; ACTIVE_SLEEP_NODE=""
         
-        # 统计结果（仅在成功读取时计算）
-        if [ "$_interrupted" = false ]; then
-            if [ "$_read_success" = true ] && is_integer "$_cur" && is_integer "$_s_dirty"; then
-                local _diff=$((_s_dirty - _cur))
-                if [ "$_diff" -gt 0 ]; then
-                    TOTAL_GC_SEGS=$((TOTAL_GC_SEGS + _diff))
-                    log_msg "        └─ 结果: ✅ 清理 $_diff 段"
+        # 统计结果（仅在成功读取时计算，带溢出保护）
+        if [ "$_pt_interrupted" = false ]; then
+            if [ "$_pt_read_success" = true ] && is_integer "$_pt_cur" && is_integer "$_pt_s_dirty"; then
+                _pt_diff=$((_pt_s_dirty - _pt_cur))
+                if [ "$_pt_diff" -gt 0 ]; then
+                    # 整数溢出保护（32位最大值约 21 亿，限制为 9 位数）
+                    if [ ${#TOTAL_GC_SEGS} -le 9 ] 2>/dev/null; then
+                        TOTAL_GC_SEGS=$((TOTAL_GC_SEGS + _pt_diff))
+                    fi
+                    log_msg "            └─ 结果: ✅ 清理 $_pt_diff 段"
                 else
-                    log_msg "        └─ 结果: ➤ 无变化 (初始:$_s_dirty -> 结束:$_cur)"
+                    log_msg "            └─ 结果: ➤ 无变化 [初始:$_pt_s_dirty -> 结束:$_pt_cur]"
                 fi
             else
-                log_msg "        └─ 结果: ⚠️ 读取失败，无法统计"
+                log_msg "            └─ 结果: ⚠️ 读取失败，无法统计"
             fi
         else
-            log_msg "        └─ 结果: ⚠️ 中断"
+            log_msg "            └─ 结果: ⚠️ 已中断"
         fi
     fi
 }
@@ -983,9 +1342,10 @@ process_target() {
 
 if ! acquire_lock; then
     _pid=""; read_first_line _pid "$LOCK_PID_FILE"
-    log_msg "❌ 锁冲突 (PID: $_pid)"; exit 1
+    log_msg "❌ 锁冲突 [PID: $_pid]"
+    exit $EXIT_LOCK_CONFLICT
 fi
-log_msg "✅ 锁已获取 (PID: $$)"
+log_msg "✅ 锁已获取 (PID: $CURRENT_PID)"
 
 # [自我修复] 清理可能残留的唤醒锁 (防止上次异常退出导致无法休眠)
 echo "$WAKE_LOCK_ID" > /sys/power/wake_unlock 2>/dev/null
@@ -994,15 +1354,18 @@ trap 'cleanup' EXIT TERM INT HUP QUIT ABRT
 
 if [ "$(id -u)" -ne 0 ]; then
     log_msg "❌ 需要 Root 权限"
-    exit 1
+    exit $EXIT_NO_ROOT
 fi
 
 log_msg "=== f2fsopt 启动 ==="
 
+# 配置验证
+validate_config
+
 # 检测模块状态（禁用/卸载/更新）
 if [ -f "$MODDIR/disable" ] || [ -f "$MODDIR/remove" ] || [ -f "$MODDIR/update" ]; then
     log_msg "⚠️ 检测到模块操作标记，跳过执行"
-    cleanup 0
+    cleanup $EXIT_SUCCESS
 fi
 
 # OOM 保护
@@ -1013,13 +1376,13 @@ fi
 # 充电状态检查
 if [ "$ONLY_CHARGING" = true ] && ! is_charging; then
     log_msg "🔋 未充电，跳过执行"
-    cleanup 2
+    cleanup $EXIT_CONDITION
 fi
 
 # 屏幕状态检查
 if [ "$STOP_ON_SCREEN_ON" = true ] && is_screen_on; then
     log_msg "📱 亮屏中，跳过执行"
-    cleanup 2
+    cleanup $EXIT_CONDITION
 fi
 
 if [ -n "$MANUAL_TARGETS" ]; then
@@ -1030,9 +1393,24 @@ if [ -n "$MANUAL_TARGETS" ]; then
     _manual_count=0
     
     for _m_target in $MANUAL_TARGETS; do
+        # 路径安全验证
+        case "$_m_target" in
+            */../*|*/../*|../*|*/..)
+                log_msg "   ❌ 跳过: $_m_target [包含路径遍历]"
+                continue
+                ;;
+            /*)
+                # 路径以 / 开头，合法
+                ;;
+            *)
+                log_msg "   ❌ 跳过: $_m_target [必须是绝对路径]"
+                continue
+                ;;
+        esac
+        
         # 验证路径存在
         if [ ! -d "$_m_target" ]; then
-            log_msg "   ❌ 跳过: $_m_target (目录不存在)"
+            log_msg "   ❌ 跳过: $_m_target [目录不存在]"
             continue
         fi
         
@@ -1058,14 +1436,22 @@ if [ -n "$MANUAL_TARGETS" ]; then
                                 # 获取设备指纹（统一去重机制）
                                 _m_fp=$(get_device_fingerprint "$_m_dev" "$_m_mnt")
                                 if [ -n "$_m_fp" ]; then
-                                    # 指纹安全化
+                                    # 指纹安全化（移除特殊字符，防止 eval 注入）
                                     _id_safe="$_m_fp"
+                                    # 移除 : 和 /
                                     while case "$_id_safe" in *[:/]*) true;; *) false;; esac; do
                                         case "$_id_safe" in
                                             *:*) _id_safe="${_id_safe%%:*}_${_id_safe#*:}" ;;
                                             */*) _id_safe="${_id_safe%%/*}_${_id_safe#*/}" ;;
                                         esac
                                     done
+                                    # 额外安全检查：移除其他潜在危险字符
+                                    case "$_id_safe" in
+                                        *[\$\`\"\'\\\;]*) 
+                                            log_msg "   ⚠️ 跳过: 设备指纹包含非法字符"
+                                            continue
+                                            ;;
+                                    esac
                                     
                                     _len=${#_m_mnt}
                                     eval "_recorded_len=\${_best_len_${_id_safe}:-99999}"
@@ -1084,7 +1470,7 @@ if [ -n "$MANUAL_TARGETS" ]; then
                                             log_msg "   🔄 更新: $_m_target (路径更短)"
                                         fi
                                     else
-                                        log_msg "   ⚠️ 跳过: $_m_target (已有更短路径)"
+                                        log_msg "   ⚠️ 跳过: $_m_target [已有更短路径]"
                                     fi
                                     
                                     eval "_best_count_${_id_safe}=\$((\${_best_count_${_id_safe}:-0} + 1))"
@@ -1094,14 +1480,14 @@ if [ -n "$MANUAL_TARGETS" ]; then
                                 break
                                 ;;
                             *)
-                                log_msg "   ⚠️ 跳过: $_m_target (只读挂载)"
+                                log_msg "   ⚠️ 跳过: $_m_target [只读挂载]"
                                 _m_found=true
                                 break
                                 ;;
                         esac
                         ;;
                     *)
-                        log_msg "   ⚠️ 跳过: $_m_target (不支持的文件系统: $_m_type)"
+                        log_msg "   ⚠️ 跳过: $_m_target [不支持的文件系统: $_m_type]"
                         _m_found=true
                         break
                         ;;
@@ -1110,12 +1496,12 @@ if [ -n "$MANUAL_TARGETS" ]; then
         done < /proc/mounts
         
         if ! $_m_found; then
-            log_msg "   ⚠️ 跳过: $_m_target (未找到挂载信息)"
+            log_msg "   ⚠️ 跳过: $_m_target [未找到挂载信息]"
         fi
     done
     
     # 处理收集到的设备（最短路径优先）
-    log_msg "📋 实际处理 ${_manual_count} 个指定路径"
+    log_msg "📋 待处理: ${_manual_count} 个指定路径"
     
     for _id in $_unique_ids; do
         eval "_line=\${_best_line_${_id}}"
@@ -1128,7 +1514,7 @@ if [ -n "$MANUAL_TARGETS" ]; then
             _m_type="${_rest#*@@@}"
             
             if [ "$_count" -gt 1 ]; then
-                log_msg "   🔗 $_m_mnt (合并 $_count 个挂载点)"
+                log_msg "   🔗 $_m_mnt [合并 $_count 个挂载点]"
             fi
             process_target "$_m_mnt" "$_m_dev" "$_m_type"
         fi
@@ -1161,21 +1547,26 @@ else
         _scan_count=$((_scan_count + 1))
         
         # 性能监控：仅调试模式启用，且仅对需处理的挂载点计时
-        local _mount_start_ms=0
+        _mount_start_ms=0
         [ "$DEBUG_SCAN" = "1" ] && _mount_start_ms=$(get_timestamp_ms)
         
         # 获取设备指纹 (性能瓶颈点)
         _fingerprint=$(get_device_fingerprint "$_dev" "$_mnt_decoded")
         if [ -z "$_fingerprint" ]; then continue; fi
         
-        # 指纹安全化 (8:32 → 8_32，循环直到不包含特殊字符 : /)
+        # 指纹安全化（移除特殊字符，防止 eval 注入）
         _id_safe="$_fingerprint"
+        # 移除 : 和 /
         while case "$_id_safe" in *[:/]*) true;; *) false;; esac; do
             case "$_id_safe" in
                 *:*) _id_safe="${_id_safe%%:*}_${_id_safe#*:}" ;;
                 */*) _id_safe="${_id_safe%%/*}_${_id_safe#*/}" ;;
             esac
         done
+        # 额外安全检查：移除其他潜在危险字符
+        case "$_id_safe" in
+            *[\$\`\"\'\\\;]*) continue ;;  # 跳过包含危险字符的设备
+        esac
         
         _len=${#_mnt_decoded}
         eval "_recorded_len=\${_best_len_${_id_safe}:-99999}"
@@ -1196,7 +1587,7 @@ else
         
         # 性能监控：仅调试模式下计算耗时
         if [ "$DEBUG_SCAN" = "1" ] && [ "$_mount_start_ms" -gt 0 ] 2>/dev/null; then
-            local _mount_end_ms _mount_elapsed_ms
+            _mount_end_ms=0; _mount_elapsed_ms=0
             _mount_end_ms=$(get_timestamp_ms)
             _mount_elapsed_ms=$((_mount_end_ms - _mount_start_ms))
             
@@ -1220,22 +1611,17 @@ else
         
     done < /proc/mounts
 
-    log_msg "⚖️ 扫描完成 (处理: ${_scan_count}, 跳过: ${_skip_count})"
+    log_msg "⚖️ 扫描完成 [处理: ${_scan_count}, 跳过: ${_skip_count}]"
     
     # 性能诊断报告
     if [ "$DEBUG_SCAN" = "1" ] && [ "$_very_slow_count" -gt 0 ]; then
-        log_msg "📊 性能诊断报告："
-        log_msg "   发现 ${_very_slow_count} 个慢速挂载点 (>= ${VERY_SLOW_THRESHOLD}ms)"
-        log_msg ""
-        log_msg "   🔍 详细列表："
+        log_msg "📊 性能诊断报告:"
+        log_msg "    ├─ 发现 ${_very_slow_count} 个慢速挂载点 [>= ${VERY_SLOW_THRESHOLD}ms]"
+        log_msg "    ├─ 详细列表:"
         printf '%s' "$_slow_mounts" | while IFS='|' read -r _slow_path _slow_time; do
-            [ -n "$_slow_path" ] && log_msg "      - $_slow_path  [$_slow_time]"
+            [ -n "$_slow_path" ] && log_msg "            - $_slow_path [$_slow_time]"
         done
-        log_msg ""
-        log_msg "   💡 优化建议："
-        log_msg "      1. 将以上路径添加到黑名单变量 IGNORE_PREFIXES"
-        log_msg "      2. 检查是否为虚拟挂载点或不必要的分区"
-        log_msg ""
+        log_msg "    └─ 建议: 将上述路径添加到黑名单 IGNORE_PREFIXES"
     fi
     
     # 结果输出与执行
@@ -1250,7 +1636,7 @@ else
             _type="${_rest#*@@@}"
             
             if [ "$_count" -gt 1 ]; then
-                 log_msg "🔸 $_mnt (优选自 ${_count} 个挂载点)"
+                 log_msg "🔸 $_mnt [优选自 ${_count} 个挂载点]"
             else
                  log_msg "🔹 $_mnt"
             fi
@@ -1315,4 +1701,4 @@ SUMMARY="🧹Trim:${SHOW_TRIM} ♻️GC:${SHOW_GC} ⏱️耗时:${DURATION}秒"
 log_msg "=== 执行完成 ==="
 log_msg "$SUMMARY"
 update_magisk_ui "$SUMMARY"
-cleanup 0
+cleanup $EXIT_SUCCESS
