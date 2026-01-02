@@ -501,11 +501,127 @@ button.loading::after{
   }
 }
 
-/* ===== Cron 快捷选择 ===== */
+/* ===== Cron 快捷选择容器 ===== */
+.cron-presets-container{
+  margin-top:16px;
+  padding:16px;
+  background:var(--bg-input);
+  border:1px solid var(--border-color);
+  border-radius:var(--radius-md);
+  max-height:400px;
+  overflow-y:auto;
+}
+.cron-presets-container::-webkit-scrollbar{width:6px}
+.cron-presets-container::-webkit-scrollbar-track{background:transparent}
+.cron-presets-container::-webkit-scrollbar-thumb{background:var(--border-color);border-radius:3px}
+
+/* 搜索输入框包装器 */
+.preset-search-wrapper{
+  position:relative;
+  margin-bottom:16px;
+}
+
+/* 搜索输入框 */
+.preset-search{
+  width:100%;
+  height:40px;
+  padding:8px 36px 8px 36px;
+  background:var(--bg-card);
+  border:1px solid var(--border-color);
+  border-radius:var(--radius-md);
+  color:var(--text-primary);
+  font-size:14px;
+  transition:border-color var(--transition-fast),box-shadow var(--transition-fast);
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2386868b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;
+  background-position:12px center;
+}
+.preset-search:focus{
+  outline:none;
+  border-color:var(--accent);
+  box-shadow:0 0 0 3px rgba(0,122,255,0.1);
+}
+.preset-search::placeholder{
+  color:var(--text-tertiary);
+}
+
+/* 清空搜索按钮 */
+.preset-search-clear{
+  position:absolute;
+  right:8px;
+  top:50%;
+  transform:translateY(-50%);
+  width:24px;
+  height:24px;
+  min-width:24px;
+  padding:0;
+  background:var(--border-color);
+  border:none;
+  border-radius:50%;
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  transition:background var(--transition-fast),opacity var(--transition-fast);
+  opacity:0.7;
+}
+.preset-search-clear:hover{
+  background:var(--text-tertiary);
+  opacity:1;
+  transform:translateY(-50%);
+  box-shadow:none;
+}
+.preset-search-clear .icon{
+  stroke:var(--bg-card);
+}
+
+/* 分组样式 */
+.preset-group{
+  margin-bottom:16px;
+}
+.preset-group:last-child{
+  margin-bottom:0;
+}
+.preset-group-title{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-size:12px;
+  font-weight:600;
+  color:var(--text-secondary);
+  text-transform:uppercase;
+  letter-spacing:0.5px;
+  margin-bottom:10px;
+  padding:6px 10px;
+  background:rgba(0,122,255,0.05);
+  border-radius:var(--radius-sm);
+  border-left:3px solid var(--accent);
+}
+.preset-group-title .icon{
+  width:14px;
+  height:14px;
+  stroke:var(--accent);
+}
+@media (prefers-color-scheme: dark) {
+  .preset-group-title{
+    background:rgba(0,122,255,0.1);
+  }
+}
+
+/* 选项容器 */
+.preset-items{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+}
+
+/* 旧版快捷选项（兼容） */
 .cron-presets{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+
+/* 快捷选项样式 */
 .cron-preset{
   padding:8px 14px;
-  background:var(--bg-input);
+  background:var(--bg-card);
   border:1px solid var(--border-color);
   border-radius:var(--radius-sm);
   font-size:12px;
@@ -514,7 +630,15 @@ button.loading::after{
   transition:all var(--transition-fast) ease;
   display:inline-flex;
   align-items:center;
+  gap:6px;
   font-weight:500;
+  position:relative;
+}
+.cron-preset .icon{
+  width:14px;
+  height:14px;
+  stroke:var(--text-tertiary);
+  transition:stroke var(--transition-fast);
 }
 .cron-preset:hover{
   border-color:var(--accent);
@@ -522,9 +646,190 @@ button.loading::after{
   background:rgba(0,122,255,0.05);
   transform:translateY(-1px);
 }
+.cron-preset:hover .icon{
+  stroke:var(--accent);
+}
 .cron-preset:active{
   transform:translateY(0) scale(0.98);
 }
+
+/* 激活/高亮状态 */
+.cron-preset.active{
+  border-color:var(--accent);
+  background:rgba(0,122,255,0.1);
+  color:var(--accent);
+  box-shadow:0 0 0 2px rgba(0,122,255,0.2);
+}
+.cron-preset.active .icon{
+  stroke:var(--accent);
+}
+
+/* 焦点状态 (键盘导航) */
+.cron-preset:focus{
+  outline:none;
+  border-color:var(--accent);
+  box-shadow:0 0 0 3px rgba(0,122,255,0.3);
+}
+.cron-preset:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:2px;
+}
+
+/* 推荐标记 */
+.preset-badge{
+  display:inline-flex;
+  align-items:center;
+  padding:2px 6px;
+  border-radius:10px;
+  font-size:10px;
+  font-weight:600;
+  margin-left:4px;
+}
+
+/* 推荐标记样式 */
+.preset-badge.preset-recommended{
+  background:rgba(52,199,89,0.15);
+  color:var(--success);
+}
+
+/* 频率标记 - 极高频 */
+.preset-badge.frequency-very-high{
+  background:rgba(255,59,48,0.15);
+  color:var(--danger);
+}
+
+/* 频率标记 - 高频 */
+.preset-badge.frequency-high{
+  background:rgba(255,149,0,0.15);
+  color:var(--warning);
+}
+
+/* 频率标记 - 中频 */
+.preset-badge.frequency-medium{
+  background:rgba(255,149,0,0.15);
+  color:var(--warning);
+}
+
+/* 频率标记 - 低频 */
+.preset-badge.frequency-low{
+  background:rgba(0,122,255,0.15);
+  color:var(--accent);
+}
+
+/* 隐藏状态 (用于搜索过滤) */
+.preset-group.hidden,
+.cron-preset.hidden{
+  display:none !important;
+}
+
+/* 无结果提示 */
+.preset-no-results{
+  display:none;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  padding:32px 16px;
+  text-align:center;
+}
+
+/* 跨模式警告提示框 */
+.cross-mode-warning{
+  display:flex;
+  align-items:flex-start;
+  gap:12px;
+  padding:12px 16px;
+  margin-top:12px;
+  background:rgba(255,149,0,0.1);
+  border:1px solid rgba(255,149,0,0.3);
+  border-radius:var(--radius-md);
+  border-left:4px solid var(--warning);
+  animation:fadeIn var(--transition-normal) ease-out;
+}
+.cross-mode-warning .icon{
+  width:20px;
+  height:20px;
+  stroke:var(--warning);
+  flex-shrink:0;
+  margin-top:2px;
+}
+.cross-mode-warning-content{
+  flex:1;
+}
+.cross-mode-warning-title{
+  font-size:14px;
+  font-weight:600;
+  color:var(--text-primary);
+  margin-bottom:4px;
+}
+.cross-mode-warning-message{
+  font-size:12px;
+  color:var(--text-secondary);
+  line-height:1.5;
+}
+.cross-mode-warning.error{
+  background:rgba(255,59,48,0.1);
+  border-color:rgba(255,59,48,0.3);
+  border-left-color:var(--danger);
+}
+.cross-mode-warning.error .icon{
+  stroke:var(--danger);
+}
+
+/* 禁用状态的输入框 */
+input[type="text"]:disabled,
+input[type="number"]:disabled{
+  background:var(--bg-input);
+  opacity:0.5;
+  cursor:not-allowed;
+}
+input[type="text"]:disabled::placeholder,
+input[type="number"]:disabled::placeholder{
+  color:var(--text-tertiary);
+}
+
+@keyframes fadeIn{
+  from{opacity:0;transform:translateY(-8px)}
+  to{opacity:1;transform:translateY(0)}
+}
+
+/* 性能建议提示 */
+.performance-tip{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:10px 14px;
+  margin-top:12px;
+  border-radius:var(--radius-md);
+  font-size:12px;
+  animation:fadeIn var(--transition-normal) ease-out;
+}
+.performance-tip.very-high{
+  background:rgba(255,59,48,0.1);
+  border:1px solid rgba(255,59,48,0.2);
+  color:var(--danger);
+}
+.performance-tip.high{
+  background:rgba(255,149,0,0.1);
+  border:1px solid rgba(255,149,0,0.2);
+  color:var(--warning);
+}
+.performance-tip.medium{
+  background:rgba(255,149,0,0.1);
+  border:1px solid rgba(255,149,0,0.2);
+  color:var(--warning);
+}
+.performance-tip.low{
+  background:rgba(52,199,89,0.1);
+  border:1px solid rgba(52,199,89,0.2);
+  color:var(--success);
+}
+.performance-tip .icon{
+  width:16px;
+  height:16px;
+  flex-shrink:0;
+}
+
+/* Cron 预览 */
 .cron-preview{
   font-size:12px;
   color:var(--success);
@@ -533,6 +838,53 @@ button.loading::after{
   font-weight:500;
 }
 .cron-preview.show{display:block}
+
+/* ===== 响应式 - 快捷选项 ===== */
+@media (max-width:600px){
+  .cron-presets-container{
+    padding:12px;
+    max-height:300px;
+  }
+  .preset-search-wrapper{
+    margin-bottom:12px;
+  }
+  .preset-search{
+    height:44px;
+    font-size:16px; /* 防止 iOS 缩放 */
+    padding-right:40px;
+  }
+  .preset-search-clear{
+    width:28px;
+    height:28px;
+    min-width:28px;
+    right:10px;
+  }
+  .preset-group-title{
+    font-size:11px;
+    padding:5px 8px;
+  }
+  .preset-items{
+    gap:6px;
+  }
+  .cron-preset{
+    padding:10px 12px;
+    font-size:13px;
+    min-height:40px;
+  }
+  .preset-badge{
+    font-size:9px;
+    padding:2px 5px;
+  }
+  .cross-mode-warning{
+    padding:10px 12px;
+  }
+  .cross-mode-warning-title{
+    font-size:13px;
+  }
+  .cross-mode-warning-message{
+    font-size:11px;
+  }
+}
 
 /* ===== 响应式 ===== */
 @media (max-width:600px){
@@ -948,6 +1300,22 @@ button.loading::after{
       <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
       <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
     </symbol>
+    
+    <!-- 搜索图标 -->
+    <symbol id="icon-search" viewBox="0 0 24 24">
+      <circle cx="11" cy="11" r="8"/>
+      <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+    </symbol>
+    
+    <!-- 星星图标 (推荐) -->
+    <symbol id="icon-star" viewBox="0 0 24 24">
+      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+    </symbol>
+    
+    <!-- 闪电图标 (高频) -->
+    <symbol id="icon-zap" viewBox="0 0 24 24">
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+    </symbol>
   </defs>
 </svg>
 
@@ -1012,16 +1380,33 @@ button.loading::after{
 </div>
 <div class="form-group">
 <label>Cron 表达式</label>
-<input type="text" id="cronExp" placeholder="0 */4 * * *" oninput="validateCron()">
-<div class="cron-presets">
-<span class="cron-preset" onclick="setCron('0 */4 * * *')"><svg class="icon" style="width:14px;height:14px;margin-right:4px"><use href="#icon-clock"/></svg>每4小时</span>
-<span class="cron-preset" onclick="setCron('0 */6 * * *')"><svg class="icon" style="width:14px;height:14px;margin-right:4px"><use href="#icon-clock"/></svg>每6小时</span>
-<span class="cron-preset" onclick="setCron('0 3 * * *')"><svg class="icon" style="width:14px;height:14px;margin-right:4px"><use href="#icon-clock"/></svg>每天3点</span>
-<span class="cron-preset" onclick="setCron('0 2 * * 0')"><svg class="icon" style="width:14px;height:14px;margin-right:4px"><use href="#icon-clock"/></svg>每周日2点</span>
-</div>
+<input type="text" id="cronExp" placeholder="0 */4 * * *" oninput="validateCron(); presetManager.highlightActive(this.value)">
 <div class="help-text">格式: 分 时 日 月 周</div>
 <div class="error-text" id="cronError"></div>
 <div class="cron-preview" id="cronPreview"></div>
+<!-- 跨模式警告容器 -->
+<div id="crossModeWarning" class="cross-mode-warning" style="display:none" role="alert" aria-live="polite">
+<svg class="icon" aria-hidden="true"><use href="#icon-alert-triangle"/></svg>
+<div class="cross-mode-warning-content">
+<div class="cross-mode-warning-title" id="crossModeWarningTitle"></div>
+<div class="cross-mode-warning-message" id="crossModeWarningMessage"></div>
+</div>
+</div>
+<!-- 性能建议容器 -->
+<div id="performanceTip" class="performance-tip" style="display:none">
+<svg class="icon"><use href="#icon-info-circle"/></svg>
+<span id="performanceTipText"></span>
+</div>
+</div>
+<!-- 快捷选项容器 -->
+<div class="cron-presets-container" id="cronPresetsContainer">
+<div class="preset-search-wrapper">
+<input type="text" class="preset-search" id="presetSearch" placeholder="搜索快捷选项..." oninput="handlePresetSearch(this.value)" aria-label="搜索快捷选项">
+<button type="button" class="preset-search-clear" id="presetSearchClear" onclick="clearPresetSearch()" aria-label="清空搜索" style="display:none">
+<svg class="icon" style="width:14px;height:14px"><use href="#icon-close"/></svg>
+</button>
+</div>
+<!-- 快捷选项将由 JavaScript 动态渲染 -->
 </div>
 <div class="form-row">
 <div class="form-group">
@@ -1143,6 +1528,13 @@ button.loading::after{
 </div>
 <div class="toggle" id="toggleTurboGc" onclick="toggleSwitch('turboGc')"></div>
 </div>
+<div class="toggle-group">
+<div class="toggle-info">
+<div class="toggle-label">系统通知</div>
+<div class="toggle-desc">任务完成后发送系统通知 (需 Android 10+)</div>
+</div>
+<div class="toggle" id="toggleNotifications" onclick="toggleSwitch('notifications')"></div>
+</div>
 
 <div class="section-title">运行条件</div>
 <div class="toggle-group">
@@ -1158,6 +1550,27 @@ button.loading::after{
 <div class="toggle-desc">仅在充电状态下执行优化</div>
 </div>
 <div class="toggle" id="toggleOnlyCharging" onclick="toggleSwitch('onlyCharging')"></div>
+</div>
+
+<div class="section-title">扫描诊断</div>
+<div class="toggle-group">
+<div class="toggle-info">
+<div class="toggle-label">扫描性能诊断</div>
+<div class="toggle-desc">启用挂载点扫描耗时监控和日志输出</div>
+</div>
+<div class="toggle" id="toggleDebugScan" onclick="toggleSwitch('debugScan')"></div>
+</div>
+<div class="form-row">
+<div class="form-group">
+<label>慢速阈值 (ms)</label>
+<input type="number" id="slowMountThreshold" min="100" max="10000" placeholder="1000">
+<div class="help-text">超过此值输出信息日志 (100-10000)</div>
+</div>
+<div class="form-group">
+<label>极慢阈值 (ms)</label>
+<input type="number" id="verySlowThreshold" min="100" max="30000" placeholder="1500">
+<div class="help-text">超过此值输出警告日志 (100-30000)</div>
+</div>
 </div>
 
 <div class="button-group">
@@ -1210,9 +1623,101 @@ const toggleState = {
     smartGc: false,
     smartTrim: false,
     turboGc: false,
+    notifications: false,
     stopOnScreen: false,
-    onlyCharging: false
+    onlyCharging: false,
+    debugScan: false
 };
+
+// ===== Cron 快捷选项配置 =====
+const CRON_PRESETS = [
+    // 分钟级别 - 高频/极高频
+    { group: 'minute', expr: '*/5 * * * *', label: '每5分钟', icon: 'clock', frequency: 'very-high' },
+    { group: 'minute', expr: '*/10 * * * *', label: '每10分钟', icon: 'clock', frequency: 'very-high' },
+    { group: 'minute', expr: '*/15 * * * *', label: '每15分钟', icon: 'clock', frequency: 'high' },
+    { group: 'minute', expr: '*/30 * * * *', label: '每30分钟', icon: 'clock', frequency: 'high' },
+    
+    // 小时级别 - 中频/低频
+    { group: 'hour', expr: '0 * * * *', label: '每小时', icon: 'clock', frequency: 'medium' },
+    { group: 'hour', expr: '0 */2 * * *', label: '每2小时', icon: 'clock', frequency: 'medium' },
+    { group: 'hour', expr: '0 */3 * * *', label: '每3小时', icon: 'clock', frequency: 'low', recommended: true },
+    { group: 'hour', expr: '0 */4 * * *', label: '每4小时', icon: 'clock', frequency: 'low', recommended: true, default: true },
+    { group: 'hour', expr: '0 */6 * * *', label: '每6小时', icon: 'clock', frequency: 'low', recommended: true },
+    { group: 'hour', expr: '0 */8 * * *', label: '每8小时', icon: 'clock' },
+    { group: 'hour', expr: '0 */12 * * *', label: '每12小时', icon: 'clock' },
+    
+    // 天级别 - 无警告
+    { group: 'day', expr: '0 0 * * *', label: '每天凌晨0点', icon: 'clock' },
+    { group: 'day', expr: '0 3 * * *', label: '每天凌晨3点', icon: 'clock', recommended: true },
+    { group: 'day', expr: '0 12 * * *', label: '每天中午12点', icon: 'clock' },
+    { group: 'day', expr: '0 21 * * *', label: '每天晚上21点', icon: 'clock' },
+    
+    // 周级别
+    { group: 'week', expr: '0 3 * * 1', label: '每周一凌晨3点', icon: 'clock' },
+    { group: 'week', expr: '0 3 * * 0', label: '每周日凌晨3点', icon: 'clock' },
+    { group: 'week', expr: '0 21 * * 3', label: '每周三晚上21点', icon: 'clock' },
+    
+    // 月级别
+    { group: 'month', expr: '0 3 1 * *', label: '每月1号凌晨3点', icon: 'clock' },
+    { group: 'month', expr: '0 3 15 * *', label: '每月15号凌晨3点', icon: 'clock' }
+];
+
+const GROUP_CONFIG = {
+    minute: { title: '分钟级别', icon: 'clock', order: 1 },
+    hour: { title: '小时级别', icon: 'clock', order: 2 },
+    day: { title: '天级别', icon: 'clock', order: 3 },
+    week: { title: '周级别', icon: 'clock', order: 4 },
+    month: { title: '月级别', icon: 'clock', order: 5 }
+};
+
+// ===== 频率影响级别配置 =====
+const FREQUENCY_LEVELS = {
+    'very-high': {
+        badge: '极高频',
+        color: 'var(--danger)',
+        icon: 'alert-triangle',
+        message: '⚠️ 极高频执行会导致显著的电池消耗、性能影响和闪存磨损',
+        cssClass: 'frequency-very-high'
+    },
+    'high': {
+        badge: '高频',
+        color: 'var(--warning)',
+        icon: 'alert-triangle',
+        message: '💡 高频执行可能导致明显的电池消耗和性能影响',
+        cssClass: 'frequency-high'
+    },
+    'medium': {
+        badge: '中频',
+        color: 'var(--warning)',
+        icon: 'info-circle',
+        message: 'ℹ️ 中等频率，适度的资源使用',
+        cssClass: 'frequency-medium'
+    },
+    'low': {
+        badge: '低频',
+        color: 'var(--accent)',
+        icon: 'check-circle',
+        message: '✓ 低频执行，对系统影响最小',
+        cssClass: 'frequency-low'
+    }
+};
+
+// ===== 推荐标记配置 =====
+const RECOMMENDATION_CONFIG = {
+    badge: '推荐',
+    color: 'var(--success)',
+    icon: 'check-circle',
+    message: '✓ 推荐频率，平衡优化效果和系统影响',
+    cssClass: 'preset-recommended'
+};
+
+const CRON_FIELD_RULES = [
+    { name: '分钟', min: 0, max: 59, index: 0 },
+    { name: '小时', min: 0, max: 23, index: 1 },
+    { name: '日期', min: 1, max: 31, index: 2 },
+    { name: '月份', min: 1, max: 12, index: 3 },
+    { name: '星期', min: 0, max: 7, index: 4 }
+];
 
 // 按钮状态管理器
 const ButtonState = {
@@ -1266,6 +1771,630 @@ class ButtonManager {
 }
 
 const btnManager = new ButtonManager();
+
+// ===== 快捷选项管理器 =====
+class PresetManager {
+    constructor() {
+        this.presets = CRON_PRESETS;
+        this.groups = GROUP_CONFIG;
+        this.container = null;
+        this.searchInput = null;
+        this.activePreset = null;
+    }
+    
+    // 渲染所有快捷选项
+    renderPresets() {
+        this.container = document.querySelector('.cron-presets-container');
+        if (!this.container) {
+            console.warn('快捷选项容器未找到');
+            return;
+        }
+        
+        // 清空容器
+        this.container.innerHTML = '';
+        
+        // 按分组渲染
+        const groupedPresets = this.groupPresets();
+        const fragment = document.createDocumentFragment();
+        
+        // 按顺序渲染分组
+        Object.keys(this.groups)
+            .sort((a, b) => this.groups[a].order - this.groups[b].order)
+            .forEach(groupKey => {
+                const group = this.groups[groupKey];
+                const presets = groupedPresets[groupKey] || [];
+                
+                if (presets.length === 0) return;
+                
+                const groupEl = this.createGroupElement(group, presets);
+                fragment.appendChild(groupEl);
+            });
+        
+        this.container.appendChild(fragment);
+        
+        // 使用事件委托处理点击
+        this.container.addEventListener('click', (e) => {
+            const presetEl = e.target.closest('.cron-preset');
+            if (presetEl) {
+                const expr = presetEl.dataset.expr;
+                this.applyPreset(expr);
+            }
+        });
+    }
+    
+    // 按分组组织快捷选项
+    groupPresets() {
+        const grouped = {};
+        this.presets.forEach(preset => {
+            if (!grouped[preset.group]) {
+                grouped[preset.group] = [];
+            }
+            grouped[preset.group].push(preset);
+        });
+        return grouped;
+    }
+    
+    // 创建分组元素
+    createGroupElement(group, presets) {
+        const groupEl = document.createElement('div');
+        groupEl.className = 'preset-group';
+        groupEl.dataset.group = group.title;
+        
+        // 分组标题
+        const titleEl = document.createElement('div');
+        titleEl.className = 'preset-group-title';
+        titleEl.innerHTML = `
+            <svg class="icon"><use href="#icon-${group.icon}"/></svg>
+            ${group.title}
+        `;
+        groupEl.appendChild(titleEl);
+        
+        // 选项容器
+        const itemsEl = document.createElement('div');
+        itemsEl.className = 'preset-items';
+        
+        presets.forEach(preset => {
+            const presetEl = this.createPresetElement(preset);
+            itemsEl.appendChild(presetEl);
+        });
+        
+        groupEl.appendChild(itemsEl);
+        return groupEl;
+    }
+    
+    // 创建快捷选项元素
+    createPresetElement(preset) {
+        const el = document.createElement('span');
+        el.className = 'cron-preset';
+        el.dataset.expr = preset.expr;
+        el.dataset.group = preset.group;
+        el.setAttribute('role', 'button');
+        el.setAttribute('tabindex', '0');
+        el.setAttribute('aria-label', `${preset.label}，Cron 表达式: ${preset.expr}`);
+        
+        let html = `<svg class="icon"><use href="#icon-${preset.icon}"/></svg>${preset.label}`;
+        
+        // 使用新的 badge 渲染逻辑：优先显示推荐，其次显示频率
+        html += this.renderBadge(preset);
+        
+        el.innerHTML = html;
+        
+        // 添加键盘支持
+        el.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                this.applyPreset(preset.expr);
+            }
+        });
+        
+        return el;
+    }
+    
+    // 渲染 badge（推荐或频率警告）
+    renderBadge(preset) {
+        // 优先显示推荐标记
+        if (preset.recommended) {
+            return this.renderRecommendationBadge();
+        }
+        
+        // 其次显示频率警告
+        if (preset.frequency && FREQUENCY_LEVELS[preset.frequency]) {
+            return this.renderFrequencyBadge(preset.frequency);
+        }
+        
+        // 无标记
+        return '';
+    }
+    
+    // 渲染推荐标记
+    renderRecommendationBadge() {
+        const config = RECOMMENDATION_CONFIG;
+        return `<span class="preset-badge ${config.cssClass}" 
+                      style="background: ${config.color}15; color: ${config.color}"
+                      aria-label="${config.message}">
+                    ${config.badge}
+                </span>`;
+    }
+    
+    // 渲染频率标记
+    renderFrequencyBadge(level) {
+        const config = FREQUENCY_LEVELS[level];
+        return `<span class="preset-badge ${config.cssClass}" 
+                      style="background: ${config.color}15; color: ${config.color}"
+                      aria-label="${config.message}">
+                    ${config.badge}
+                </span>`;
+    }
+    
+    // 应用快捷选项
+    applyPreset(expr) {
+        const input = document.getElementById('cronExp');
+        if (!input) return;
+        
+        input.value = expr;
+        this.highlightActive(expr);
+        
+        // 触发验证和预览
+        validateCron();
+        
+        // 显示性能建议
+        this.showRecommendation(expr);
+    }
+    
+    // 高亮匹配的快捷选项
+    highlightActive(expr) {
+        if (!this.container) return;
+        
+        // 移除所有高亮
+        this.container.querySelectorAll('.cron-preset').forEach(el => {
+            el.classList.remove('active');
+        });
+        
+        // 高亮匹配的选项
+        const matchingEl = this.container.querySelector(`[data-expr="${expr}"]`);
+        if (matchingEl) {
+            matchingEl.classList.add('active');
+            this.activePreset = expr;
+        } else {
+            this.activePreset = null;
+        }
+    }
+    
+    // 过滤快捷选项
+    filterPresets(keyword) {
+        if (!this.container) return;
+        
+        const lowerKeyword = keyword.toLowerCase().trim();
+        
+        if (!lowerKeyword) {
+            // 显示所有选项 - 使用 CSS 类
+            this.container.querySelectorAll('.preset-group').forEach(group => {
+                group.classList.remove('hidden');
+            });
+            this.container.querySelectorAll('.cron-preset').forEach(preset => {
+                preset.classList.remove('hidden');
+            });
+            this.showNoResults(false, '');
+            return;
+        }
+        
+        let hasResults = false;
+        
+        // 遍历所有分组
+        this.container.querySelectorAll('.preset-group').forEach(groupEl => {
+            const groupTitle = groupEl.dataset.group.toLowerCase();
+            let groupHasMatch = false;
+            
+            // 检查分组标题是否匹配
+            const groupMatches = groupTitle.includes(lowerKeyword);
+            
+            // 遍历分组内的选项
+            groupEl.querySelectorAll('.cron-preset').forEach(presetEl => {
+                const label = presetEl.textContent.toLowerCase();
+                const matches = groupMatches || label.includes(lowerKeyword);
+                
+                // 使用 CSS 类控制显示/隐藏
+                if (matches) {
+                    presetEl.classList.remove('hidden');
+                    groupHasMatch = true;
+                    hasResults = true;
+                } else {
+                    presetEl.classList.add('hidden');
+                }
+            });
+            
+            // 使用 CSS 类控制分组显示/隐藏
+            if (groupHasMatch) {
+                groupEl.classList.remove('hidden');
+            } else {
+                groupEl.classList.add('hidden');
+            }
+        });
+        
+        // 显示/隐藏无结果提示
+        this.showNoResults(!hasResults, lowerKeyword);
+    }
+    
+    // 显示无结果提示
+    showNoResults(show, keyword) {
+        let noResultsEl = this.container.querySelector('.preset-no-results');
+        
+        if (show) {
+            if (!noResultsEl) {
+                noResultsEl = document.createElement('div');
+                noResultsEl.className = 'preset-no-results';
+                this.container.appendChild(noResultsEl);
+            }
+            noResultsEl.innerHTML = `
+                <svg class="icon" style="width:48px;height:48px;opacity:0.3"><use href="#icon-info-circle"/></svg>
+                <div style="margin-top:12px;font-size:14px;color:var(--text-secondary)">无匹配选项: "${keyword}"</div>
+                <div style="margin-top:8px;font-size:12px;color:var(--text-tertiary)">提示: 快捷选项最小间隔为每 5 分钟</div>
+                <div style="margin-top:4px;font-size:12px;color:var(--text-tertiary)">建议: 尝试搜索"分钟"、"小时"或"天"</div>
+            `;
+            noResultsEl.style.display = 'flex';
+        } else if (noResultsEl) {
+            noResultsEl.style.display = 'none';
+        }
+    }
+    
+    // 显示性能建议
+    showRecommendation(expr) {
+        const preset = this.presets.find(p => p.expr === expr);
+        const tipEl = document.getElementById('performanceTip');
+        const tipTextEl = document.getElementById('performanceTipText');
+        
+        if (!tipEl || !tipTextEl) return;
+        
+        // 优先显示推荐信息
+        if (preset && preset.recommended) {
+            const config = RECOMMENDATION_CONFIG;
+            tipTextEl.textContent = config.message;
+            tipEl.className = 'performance-tip low';
+            tipEl.style.display = 'flex';
+            
+            const iconEl = tipEl.querySelector('.icon use');
+            if (iconEl) {
+                iconEl.setAttribute('href', '#icon-' + config.icon);
+            }
+            return;
+        }
+        
+        // 其次显示频率警告
+        if (preset && preset.frequency) {
+            const level = FREQUENCY_LEVELS[preset.frequency];
+            if (!level) {
+                tipEl.style.display = 'none';
+                return;
+            }
+            
+            tipTextEl.textContent = level.message;
+            tipEl.className = 'performance-tip ' + preset.frequency;
+            tipEl.style.display = 'flex';
+            
+            const iconEl = tipEl.querySelector('.icon use');
+            if (iconEl) {
+                iconEl.setAttribute('href', '#icon-' + level.icon);
+            }
+            return;
+        }
+        
+        // 无提示
+        tipEl.style.display = 'none';
+    }
+}
+
+const presetManager = new PresetManager();
+
+// 搜索防抖处理
+let searchDebounceTimer = null;
+function handlePresetSearch(keyword) {
+    if (searchDebounceTimer) {
+        clearTimeout(searchDebounceTimer);
+    }
+    
+    // 显示/隐藏清空按钮
+    const clearBtn = document.getElementById('presetSearchClear');
+    if (clearBtn) {
+        clearBtn.style.display = keyword.trim() ? 'flex' : 'none';
+    }
+    
+    searchDebounceTimer = setTimeout(() => {
+        presetManager.filterPresets(keyword);
+    }, 300);
+}
+
+// 清空搜索
+function clearPresetSearch() {
+    const searchInput = document.getElementById('presetSearch');
+    const clearBtn = document.getElementById('presetSearchClear');
+    
+    if (searchInput) {
+        searchInput.value = '';
+        searchInput.focus();
+    }
+    
+    if (clearBtn) {
+        clearBtn.style.display = 'none';
+    }
+    
+    // 显示所有选项
+    presetManager.filterPresets('');
+}
+
+// 搜索框键盘事件处理
+document.addEventListener('DOMContentLoaded', function() {
+    const searchInput = document.getElementById('presetSearch');
+    if (searchInput) {
+        searchInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                clearPresetSearch();
+            }
+        });
+    }
+});
+
+// ===== 跨模式验证器 =====
+class CrossModeValidator {
+    constructor() {
+        this.scheduleMode = null;
+        this.cronExpInput = null;
+        this.sleepHeartbeatInput = null;
+    }
+    
+    init() {
+        this.scheduleMode = document.getElementById('scheduleMode');
+        this.cronExpInput = document.getElementById('cronExp');
+        this.sleepHeartbeatInput = document.getElementById('sleepHeartbeat');
+        
+        // 监听模式切换
+        if (this.scheduleMode) {
+            this.scheduleMode.addEventListener('change', () => {
+                this.updateFieldStates(this.scheduleMode.value);
+            });
+        }
+    }
+    
+    // 验证模式配置
+    validateMode(mode, cronExp, sleepHeartbeat) {
+        const result = {
+            valid: true,
+            warnings: [],
+            errors: []
+        };
+        
+        if (mode === 'sleep') {
+            // Sleep 模式下检查 Cron 表达式
+            if (cronExp && cronExp.trim() !== '') {
+                result.warnings.push({
+                    type: 'unused_cron',
+                    message: 'Sleep 模式下 Cron 表达式将被忽略',
+                    suggestion: '建议清空 Cron 表达式或切换到 Cron 模式'
+                });
+            }
+            
+            // 检查心跳间隔
+            if (!sleepHeartbeat || sleepHeartbeat.trim() === '') {
+                result.errors.push({
+                    type: 'missing_heartbeat',
+                    message: 'Sleep 模式需要设置心跳间隔',
+                    suggestion: '请设置 60-7200 秒之间的心跳间隔'
+                });
+                result.valid = false;
+            }
+        } else if (mode === 'cron') {
+            // Cron 模式下检查 Cron 表达式
+            if (!cronExp || cronExp.trim() === '') {
+                result.errors.push({
+                    type: 'missing_cron',
+                    message: 'Cron 模式需要设置 Cron 表达式',
+                    suggestion: '请输入有效的 Cron 表达式或使用快捷选项'
+                });
+                result.valid = false;
+            }
+        }
+        
+        return result;
+    }
+    
+    // 更新字段启用/禁用状态
+    updateFieldStates(mode) {
+        if (!this.cronExpInput || !this.sleepHeartbeatInput) return;
+        
+        const presetsContainer = document.getElementById('cronPresetsContainer');
+        const cronPreview = document.getElementById('cronPreview');
+        const crossModeWarning = document.getElementById('crossModeWarning');
+        
+        if (mode === 'sleep') {
+            // Sleep 模式: 禁用 Cron 表达式，启用心跳间隔
+            this.cronExpInput.disabled = true;
+            this.cronExpInput.style.opacity = '0.5';
+            this.cronExpInput.style.cursor = 'not-allowed';
+            this.cronExpInput.setAttribute('aria-disabled', 'true');
+            
+            this.sleepHeartbeatInput.disabled = false;
+            this.sleepHeartbeatInput.style.opacity = '1';
+            this.sleepHeartbeatInput.style.cursor = 'text';
+            this.sleepHeartbeatInput.removeAttribute('aria-disabled');
+            
+            // 隐藏 Cron 快捷选项容器
+            if (presetsContainer) {
+                presetsContainer.style.display = 'none';
+                presetsContainer.setAttribute('aria-hidden', 'true');
+            }
+            
+            // 隐藏 Cron 预览
+            if (cronPreview) {
+                cronPreview.classList.remove('show');
+            }
+            
+            // 检查是否有 Cron 表达式，显示警告
+            if (this.cronExpInput.value && this.cronExpInput.value.trim() !== '') {
+                this.showCrossModeWarning(
+                    'Sleep 模式下 Cron 表达式将被忽略',
+                    '当前配置的 Cron 表达式不会生效。建议清空 Cron 表达式或切换到 Cron 模式。',
+                    'warning'
+                );
+            } else {
+                this.hideCrossModeWarning();
+            }
+            
+        } else if (mode === 'cron') {
+            // Cron 模式: 启用 Cron 表达式，心跳间隔可选
+            this.cronExpInput.disabled = false;
+            this.cronExpInput.style.opacity = '1';
+            this.cronExpInput.style.cursor = 'text';
+            this.cronExpInput.removeAttribute('aria-disabled');
+            
+            this.sleepHeartbeatInput.disabled = false;
+            this.sleepHeartbeatInput.style.opacity = '1';
+            this.sleepHeartbeatInput.style.cursor = 'text';
+            this.sleepHeartbeatInput.removeAttribute('aria-disabled');
+            
+            // 显示 Cron 快捷选项容器
+            if (presetsContainer) {
+                presetsContainer.style.display = 'block';
+                presetsContainer.removeAttribute('aria-hidden');
+            }
+            
+            // 检查是否缺少 Cron 表达式，显示错误
+            if (!this.cronExpInput.value || this.cronExpInput.value.trim() === '') {
+                this.showCrossModeWarning(
+                    'Cron 模式需要配置 Cron 表达式',
+                    '请输入有效的 Cron 表达式或使用下方的快捷选项。',
+                    'error'
+                );
+            } else {
+                this.hideCrossModeWarning();
+            }
+            
+            // 触发验证
+            validateCron();
+        }
+    }
+    
+    // 显示跨模式警告
+    showCrossModeWarning(title, message, type = 'warning') {
+        const warningEl = document.getElementById('crossModeWarning');
+        const titleEl = document.getElementById('crossModeWarningTitle');
+        const messageEl = document.getElementById('crossModeWarningMessage');
+        
+        if (!warningEl || !titleEl || !messageEl) return;
+        
+        titleEl.textContent = title;
+        messageEl.textContent = message;
+        
+        warningEl.classList.remove('warning', 'error');
+        warningEl.classList.add(type);
+        warningEl.style.display = 'flex';
+    }
+    
+    // 隐藏跨模式警告
+    hideCrossModeWarning() {
+        const warningEl = document.getElementById('crossModeWarning');
+        if (warningEl) {
+            warningEl.style.display = 'none';
+        }
+    }
+}
+
+const crossModeValidator = new CrossModeValidator();
+
+// ===== 配置建议引擎 =====
+class ConfigAdvisor {
+    constructor() {
+        this.frequencyLevels = FREQUENCY_LEVELS;
+        this.recommendationConfig = RECOMMENDATION_CONFIG;
+    }
+    
+    // 获取频率级别
+    getFrequencyLevel(expr) {
+        if (!expr || expr.trim() === '') return null;
+        
+        const parts = expr.split(/\s+/);
+        if (parts.length !== 5) return null;
+        
+        const [min, hour, day, month, week] = parts;
+        
+        // 极高频 (< 15分钟)
+        if (min.startsWith('*/')) {
+            const interval = parseInt(min.slice(2));
+            if (interval < 15) return 'very-high';
+            if (interval <= 30) return 'high';
+        }
+        
+        // 高频 (每小时)
+        if (hour === '*' || (hour.startsWith('*/') && parseInt(hour.slice(2)) === 1)) {
+            return 'medium';
+        }
+        
+        // 中频 (每2-3小时)
+        if (hour.startsWith('*/')) {
+            const interval = parseInt(hour.slice(2));
+            if (interval <= 3) return 'medium';
+            if (interval <= 12) return 'low';
+        }
+        
+        // 天级别及以上 - 无警告
+        return null;
+    }
+    
+    // 获取配置建议
+    getRecommendation(expr) {
+        const level = this.getFrequencyLevel(expr);
+        if (!level) return null;
+        
+        const config = this.frequencyLevels[level];
+        if (!config) return null;
+        
+        return {
+            level: level,
+            message: config.message,
+            icon: config.icon,
+            color: config.color
+        };
+    }
+    
+    // 显示性能警告
+    showPerformanceWarning(level) {
+        if (!level || !this.frequencyLevels[level]) return;
+        
+        const config = this.frequencyLevels[level];
+        showToast(config.message, level === 'very-high' || level === 'high', 5000);
+    }
+    
+    // 分析配置并提供建议
+    analyzeConfig(mode, cronExp, sleepHeartbeat) {
+        const recommendations = [];
+        
+        if (mode === 'cron' && cronExp) {
+            const level = this.getWarningLevel(cronExp);
+            if (level === 'high') {
+                recommendations.push({
+                    type: 'performance',
+                    severity: 'warning',
+                    message: '当前 Cron 表达式执行频率较高',
+                    suggestion: '建议降低执行频率以减少电池消耗，推荐每 4-6 小时执行一次'
+                });
+            }
+        }
+        
+        if (mode === 'sleep' && sleepHeartbeat) {
+            const heartbeat = parseInt(sleepHeartbeat);
+            if (!isNaN(heartbeat) && heartbeat < 300) {
+                recommendations.push({
+                    type: 'performance',
+                    severity: 'info',
+                    message: 'Sleep 心跳间隔较短',
+                    suggestion: '较短的心跳间隔会增加电池消耗，建议设置为 1800 秒(30分钟)或更长'
+                });
+            }
+        }
+        
+        return recommendations;
+    }
+}
+
+const configAdvisor = new ConfigAdvisor();
 
 function showToast(msg, isError = false, duration = 3000) {
     const t = document.getElementById('toast');
@@ -1377,9 +2506,9 @@ async function withFeedback(apiCall, buttonId = null, loadingText = null) {
         if (response.success) {
             showToast('✓ ' + response.message, false);
             
-            // 保存配置后刷新配置状态
+            // 保存配置后刷新状态
             if (buttonId && (buttonId === 'saveConfigBtn' || buttonId === 'saveF2fsoptConfigBtn' || buttonId === 'saveActionConfigBtn')) {
-                setTimeout(() => refreshConfigStatus(), 500);
+                setTimeout(() => refreshStatus(), 500);
             }
         } else {
             showToast('✗ ' + response.message, true);
@@ -1442,20 +2571,12 @@ function validateCron() {
         return false;
     }
     
-    const ranges = [
-        { name: '分钟', min: 0, max: 59 },
-        { name: '小时', min: 0, max: 23 },
-        { name: '日期', min: 1, max: 31 },
-        { name: '月份', min: 1, max: 12 },
-        { name: '星期', min: 0, max: 7 }
-    ];
-    
+    // 使用增强的字段验证
     for (let i = 0; i < 5; i++) {
-        const part = parts[i];
-        // 支持: *, */n, n, n-m, n,m,o
-        if (!/^(\*|(\*\/[1-9]\d*)|([0-9]+(-[0-9]+)?)(,[0-9]+(-[0-9]+)?)*)$/.test(part)) {
+        const result = validateCronField(parts[i], CRON_FIELD_RULES[i]);
+        if (!result.valid) {
             input.classList.add('error');
-            error.textContent = ranges[i].name + ' 字段格式错误: ' + part;
+            error.textContent = `${CRON_FIELD_RULES[i].name}字段错误: ${result.error}`;
             error.classList.add('show');
             preview.classList.remove('show');
             return false;
@@ -1474,18 +2595,117 @@ function validateCron() {
     return true;
 }
 
+// 验证单个 Cron 字段
+function validateCronField(value, rule) {
+    // 1. 通配符
+    if (value === '*') {
+        return { valid: true };
+    }
+    
+    // 2. 步长表达式 */n
+    if (/^\*\/\d+$/.test(value)) {
+        const step = parseInt(value.slice(2));
+        if (step <= 0) {
+            return { valid: false, error: '步长必须为正整数' };
+        }
+        if (step > rule.max) {
+            return { valid: false, error: `步长不能超过 ${rule.max}` };
+        }
+        return { valid: true };
+    }
+    
+    // 3. 范围表达式 n-m
+    if (/^\d+-\d+$/.test(value)) {
+        const [start, end] = value.split('-').map(Number);
+        if (start < rule.min || start > rule.max) {
+            return { valid: false, error: `起始值必须在 ${rule.min}-${rule.max} 范围内` };
+        }
+        if (end < rule.min || end > rule.max) {
+            return { valid: false, error: `结束值必须在 ${rule.min}-${rule.max} 范围内` };
+        }
+        if (start >= end) {
+            return { valid: false, error: '起始值必须小于结束值' };
+        }
+        return { valid: true };
+    }
+    
+    // 4. 列表表达式 n,m,o
+    if (/^\d+(,\d+)*$/.test(value)) {
+        const values = value.split(',').map(Number);
+        for (const v of values) {
+            if (v < rule.min || v > rule.max) {
+                return { valid: false, error: `值 ${v} 超出 ${rule.min}-${rule.max} 范围` };
+            }
+        }
+        return { valid: true };
+    }
+    
+    // 5. 单个数值
+    if (/^\d+$/.test(value)) {
+        const num = parseInt(value);
+        if (num < rule.min || num > rule.max) {
+            return { valid: false, error: `值必须在 ${rule.min}-${rule.max} 范围内` };
+        }
+        return { valid: true };
+    }
+    
+    return { valid: false, error: '格式错误，应为数字、*、*/n、n-m 或 n,m,o' };
+}
+
 function getCronDescription(parts) {
     const [min, hour, day, month, week] = parts;
     let desc = '';
     
-    if (min === '0' && hour.startsWith('*/')) {
-        desc = '每 ' + hour.slice(2) + ' 小时执行';
-    } else if (min === '0' && /^\d+$/.test(hour) && day === '*' && month === '*' && week === '*') {
-        desc = '每天 ' + hour + ':00 执行';
-    } else if (min === '0' && /^\d+$/.test(hour) && day === '*' && month === '*' && /^\d+$/.test(week)) {
-        const weekNames = ['日', '一', '二', '三', '四', '五', '六', '日'];
-        desc = '每周' + weekNames[parseInt(week)] + ' ' + hour + ':00 执行';
+    // 每分钟执行
+    if (min === '*' && hour === '*' && day === '*' && month === '*' && week === '*') {
+        desc = '每分钟执行';
     }
+    // 每 N 分钟执行
+    else if (min.startsWith('*/') && hour === '*' && day === '*' && month === '*' && week === '*') {
+        const interval = min.slice(2);
+        desc = '每 ' + interval + ' 分钟执行';
+    }
+    // 每小时执行
+    else if (min === '0' && hour === '*' && day === '*' && month === '*' && week === '*') {
+        desc = '每小时执行';
+    }
+    // 每 N 小时执行
+    else if (min === '0' && hour.startsWith('*/')) {
+        const interval = hour.slice(2);
+        desc = '每 ' + interval + ' 小时执行';
+    }
+    // 每天特定时间执行
+    else if (/^\d+$/.test(min) && /^\d+$/.test(hour) && day === '*' && month === '*' && week === '*') {
+        const h = hour.padStart(2, '0');
+        const m = min.padStart(2, '0');
+        desc = '每天 ' + h + ':' + m + ' 执行';
+    }
+    // 每周特定时间执行
+    else if (/^\d+$/.test(min) && /^\d+$/.test(hour) && day === '*' && month === '*' && /^\d+$/.test(week)) {
+        const weekNames = ['日', '一', '二', '三', '四', '五', '六', '日'];
+        const h = hour.padStart(2, '0');
+        const m = min.padStart(2, '0');
+        desc = '每周' + weekNames[parseInt(week)] + ' ' + h + ':' + m + ' 执行';
+    }
+    // 每月特定日期执行
+    else if (/^\d+$/.test(min) && /^\d+$/.test(hour) && /^\d+$/.test(day) && month === '*' && week === '*') {
+        const h = hour.padStart(2, '0');
+        const m = min.padStart(2, '0');
+        desc = '每月 ' + day + ' 号 ' + h + ':' + m + ' 执行';
+    }
+    // 范围表达式
+    else if (min.includes('-') || hour.includes('-')) {
+        desc = '按指定范围执行';
+    }
+    // 列表表达式
+    else if (min.includes(',') || hour.includes(',')) {
+        desc = '按指定列表执行';
+    }
+    // 复杂表达式
+    else {
+        desc = '自定义调度 (查看表达式详情)';
+    }
+    
     return desc;
 }
 
@@ -1521,6 +2741,15 @@ async function loadConfig(buttonId = null) {
             }
             const timeoutMin = Math.floor(timeoutSec / 60);
             footerText.textContent = `临时 Web UI · ${timeoutMin}分钟无操作自动退出`;
+        }
+        
+        // 更新跨模式验证器状态
+        crossModeValidator.updateFieldStates(d.schedule_mode || 'sleep');
+        
+        // 高亮匹配的快捷选项
+        if (d.cron_exp) {
+            presetManager.highlightActive(d.cron_exp);
+            validateCron();
         }
         
         if (buttonId) {
@@ -1598,8 +2827,13 @@ async function loadF2fsoptConfig(buttonId = null) {
         setToggle('smartGc', d.enable_smart_gc);
         setToggle('smartTrim', d.enable_smart_trim);
         setToggle('turboGc', d.enable_turbo_gc);
+        setToggle('notifications', d.enable_notifications);
         setToggle('stopOnScreen', d.stop_on_screen);
         setToggle('onlyCharging', d.only_charging);
+        // 扫描诊断配置
+        setToggle('debugScan', d.debug_scan === '1' || d.debug_scan === 1);
+        document.getElementById('slowMountThreshold').value = d.slow_mount_threshold || '1000';
+        document.getElementById('verySlowThreshold').value = d.very_slow_threshold || '1500';
         
         if (buttonId) {
             showToast('✓ 配置已重新加载', false);
@@ -1633,8 +2867,76 @@ async function refreshStatus(buttonId = null) {
             badge.className = 'status-badge stopped';
         }
         
-        // 加载配置状态
-        await refreshConfigStatus();
+        // 更新下次执行时间（从 api/status 响应）
+        const nextRunEl = document.getElementById('nextRun');
+        if (d.next_run_ts && d.next_run_ts > 0) {
+            const nextRunDate = new Date(d.next_run_ts * 1000);
+            const now = new Date();
+            const diffMs = nextRunDate - now;
+            const diffMins = Math.floor(diffMs / 60000);
+            
+            if (diffMins < 0) {
+                nextRunEl.textContent = '即将执行';
+            } else if (diffMins < 60) {
+                nextRunEl.textContent = '约 ' + diffMins + ' 分钟后';
+            } else {
+                const diffHours = Math.floor(diffMins / 60);
+                nextRunEl.textContent = '约 ' + diffHours + ' 小时后';
+            }
+            
+            // 添加详细时间提示
+            const timeStr = nextRunDate.toLocaleString('zh-CN', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+            });
+            nextRunEl.title = '预计时间: ' + timeStr;
+        } else {
+            nextRunEl.textContent = '未知';
+            nextRunEl.title = '';
+        }
+        
+        // 更新配置状态
+        const configStatusEl = document.getElementById('configStatus');
+        if (d.pending_changes === true || d.pending_changes === 'true') {
+            configStatusEl.innerHTML = '<svg class="icon" style="width:16px;height:16px;vertical-align:middle;margin-right:4px;stroke:var(--warning)"><use href="#icon-alert-triangle"/></svg>待生效';
+            configStatusEl.style.color = 'var(--warning)';
+            
+            // 显示待生效提示
+            const alertBox = document.getElementById('pendingChangesAlert');
+            const alertMessage = document.getElementById('pendingChangesMessage');
+            
+            const diffMins = Math.floor((d.next_run_ts * 1000 - Date.now()) / 60000);
+            let message = '配置已修改，';
+            
+            if (diffMins > 0) {
+                message += '将在 ' + diffMins + ' 分钟后自动生效。';
+                
+                if (diffMins < 5) {
+                    message += '\n💡 建议：等待时间较短，可以等待自动生效。';
+                } else if (diffMins > 30) {
+                    message += '\n💡 建议：等待时间较长，建议立即应用配置。';
+                } else {
+                    message += '\n💡 提示：您可以立即应用配置或等待自动生效。';
+                }
+            } else {
+                message += '将在下次调度时生效。';
+            }
+            
+            alertMessage.textContent = message;
+            alertMessage.style.whiteSpace = 'pre-line';
+            alertBox.style.display = 'flex';
+        } else {
+            configStatusEl.innerHTML = '<svg class="icon" style="width:16px;height:16px;vertical-align:middle;margin-right:4px;stroke:var(--success)"><use href="#icon-check-circle"/></svg>已同步';
+            configStatusEl.style.color = 'var(--success)';
+            
+            // 隐藏待生效提示
+            const alertBox = document.getElementById('pendingChangesAlert');
+            alertBox.style.display = 'none';
+        }
         
         if (buttonId) {
             showToast('✓ 状态已刷新', false);
@@ -1648,79 +2950,10 @@ async function refreshStatus(buttonId = null) {
     }
 }
 
-// 刷新配置状态
+// 刷新配置状态（已废弃，保留用于兼容性）
 async function refreshConfigStatus() {
-    try {
-        const d = await apiGet('/api/config_status');
-        
-        // 更新配置状态
-        const configStatusEl = document.getElementById('configStatus');
-        if (d.synced) {
-            configStatusEl.innerHTML = '<svg class="icon" style="width:16px;height:16px;vertical-align:middle;margin-right:4px;stroke:var(--success)"><use href="#icon-check-circle"/></svg>已同步';
-            configStatusEl.style.color = 'var(--success)';
-        } else {
-            configStatusEl.innerHTML = '<svg class="icon" style="width:16px;height:16px;vertical-align:middle;margin-right:4px;stroke:var(--warning)"><use href="#icon-alert-triangle"/></svg>待生效';
-            configStatusEl.style.color = 'var(--warning)';
-        }
-        
-        // 更新下次执行时间
-        const nextRunEl = document.getElementById('nextRun');
-        let waitMinutes = 0;
-        
-        if (d.next_run && d.next_run > 0) {
-            const nextRunDate = new Date(d.next_run * 1000);
-            const now = new Date();
-            const diffMs = nextRunDate - now;
-            const diffMins = Math.floor(diffMs / 60000);
-            waitMinutes = diffMins;
-            
-            if (diffMins < 0) {
-                nextRunEl.textContent = '即将执行';
-            } else if (diffMins < 60) {
-                nextRunEl.textContent = '约 ' + diffMins + ' 分钟后';
-            } else {
-                const diffHours = Math.floor(diffMins / 60);
-                nextRunEl.textContent = '约 ' + diffHours + ' 小时后';
-            }
-        } else {
-            nextRunEl.textContent = '未知';
-        }
-        
-        // 显示/隐藏待生效提示
-        const alertBox = document.getElementById('pendingChangesAlert');
-        const alertMessage = document.getElementById('pendingChangesMessage');
-        
-        if (!d.synced && d.pending_changes) {
-            // 构建提示消息
-            let message = '配置已修改，';
-            
-            if (waitMinutes > 0) {
-                message += '将在 ' + waitMinutes + ' 分钟后自动生效。';
-                
-                // 根据等待时间提供建议
-                if (waitMinutes < 5) {
-                    message += '\n💡 建议：等待时间较短，可以等待自动生效。';
-                } else if (waitMinutes > 30) {
-                    message += '\n💡 建议：等待时间较长，建议立即应用配置。';
-                } else {
-                    message += '\n💡 提示：您可以立即应用配置或等待自动生效。';
-                }
-            } else {
-                message += '将在下次调度时生效。';
-            }
-            
-            alertMessage.textContent = message;
-            alertMessage.style.whiteSpace = 'pre-line';  // 支持换行
-            alertBox.style.display = 'flex';
-        } else {
-            alertBox.style.display = 'none';
-        }
-        
-    } catch(e) {
-        console.error('配置状态加载失败:', e);
-        document.getElementById('configStatus').textContent = '加载失败';
-        document.getElementById('nextRun').textContent = '加载失败';
-    }
+    // 此函数已合并到 refreshStatus 中
+    // 保留空函数以避免破坏现有调用
 }
 
 // 触发立即执行
@@ -2062,8 +3295,31 @@ document.getElementById('configForm').onsubmit = async function(e) {
     
     // 验证 Cron 表达式
     const mode = document.getElementById('scheduleMode').value;
+    const cronExp = document.getElementById('cronExp').value.trim();
+    const sleepHeartbeatValue = document.getElementById('sleepHeartbeat').value.trim();
+    
+    // 跨模式验证
+    const validation = crossModeValidator.validateMode(mode, cronExp, sleepHeartbeatValue);
+    
+    // 处理错误
+    if (!validation.valid) {
+        const errorMsg = validation.errors.map(e => e.message).join('\n');
+        showToast('✗ ' + errorMsg, true);
+        return;
+    }
+    
+    // 处理警告
+    if (validation.warnings.length > 0) {
+        const warning = validation.warnings[0];
+        const confirmed = confirm(
+            warning.message + '\n\n' + warning.suggestion + '\n\n是否继续保存？'
+        );
+        if (!confirmed) return;
+    }
+    
+    // Cron 格式验证
     if (mode === 'cron' && !validateCron()) {
-        showToast('请修正 Cron 表达式格式', true);
+        showToast('✗ 请修正 Cron 表达式格式', true);
         return;
     }
     
@@ -2147,6 +3403,19 @@ document.getElementById('f2fsoptForm').onsubmit = async function(e) {
     if (!validateRange('trimTimeout', 60, 3600, 'Trim超时')) return;
     if (!validateRange('gcStableCnt', 1, 50, 'GC稳定计数')) return;
     if (!validateRange('gcPoll', 1, 60, 'GC轮询间隔')) return;
+    // 扫描诊断配置验证
+    if (!validateRange('slowMountThreshold', 100, 10000, '慢速阈值')) return;
+    if (!validateRange('verySlowThreshold', 100, 30000, '极慢阈值')) return;
+    
+    // 跨字段验证：极慢阈值 >= 慢速阈值
+    const slowVal = parseInt(document.getElementById('slowMountThreshold').value, 10);
+    const verySlowVal = parseInt(document.getElementById('verySlowThreshold').value, 10);
+    if (verySlowVal < slowVal) {
+        showToast('✗ 极慢阈值必须大于等于慢速阈值', true);
+        document.getElementById('verySlowThreshold').classList.add('error');
+        return;
+    }
+    document.getElementById('verySlowThreshold').classList.remove('error');
     
     const data = {
         gc_dirty_min: document.getElementById('gcDirtyMin').value,
@@ -2159,8 +3428,13 @@ document.getElementById('f2fsoptForm').onsubmit = async function(e) {
         enable_smart_gc: toggleState.smartGc ? 'true' : 'false',
         enable_smart_trim: toggleState.smartTrim ? 'true' : 'false',
         enable_turbo_gc: toggleState.turboGc ? 'true' : 'false',
+        enable_notifications: toggleState.notifications ? 'true' : 'false',
         stop_on_screen: toggleState.stopOnScreen ? 'true' : 'false',
-        only_charging: toggleState.onlyCharging ? 'true' : 'false'
+        only_charging: toggleState.onlyCharging ? 'true' : 'false',
+        // 扫描诊断配置
+        debug_scan: toggleState.debugScan ? '1' : '0',
+        slow_mount_threshold: document.getElementById('slowMountThreshold').value,
+        very_slow_threshold: document.getElementById('verySlowThreshold').value
     };
     
     await withFeedback(
@@ -2169,6 +3443,12 @@ document.getElementById('f2fsoptForm').onsubmit = async function(e) {
         '保存中...'
     );
 };
+
+// 初始化跨模式验证器
+crossModeValidator.init();
+
+// 初始化快捷选项
+presetManager.renderPresets();
 
 loadConfig();
 loadF2fsoptConfig();
