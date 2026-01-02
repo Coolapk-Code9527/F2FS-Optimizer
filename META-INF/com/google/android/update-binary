@@ -29,9 +29,327 @@ mount /data 2>/dev/null
 . /data/adb/magisk/util_functions.sh
 [ $MAGISK_VER_CODE -lt 19000 ] && require_new_magisk
 
+#################
+# Magisk v20.4+ 配置提取
+#################
+
 if [ $MAGISK_VER_CODE -ge 20400 ]; then
-  # New Magisk have complete installation logic within util_functions.sh
+  MODID=$(unzip -p "$ZIPFILE" module.prop 2>/dev/null | grep '^id=' | cut -d= -f2 | tr -d '\r\n')
+  
+  # 验证 MODID 是否成功提取
+  if [ -z "$MODID" ]; then
+    ui_print "⚠️ 无法提取模块 ID，使用默认值"
+    MODID="f2fs_optimizer"
+  fi
+  
+  ui_print "- 模块 ID: $MODID"
+  
+  # 检测旧模块路径（根据启动模式选择不同路径）
+  if [ "$BOOTMODE" = true ]; then
+    OLD_MODPATH="$NVBASE/modules/$MODID"
+  else
+    OLD_MODPATH="$MODULEROOT/$MODID"
+  fi
+  
+  # 配置缓存文件（使用 /data/local/tmp，确保目录存在）
+  # 注意：此时 $TMPDIR 还未定义，不能使用
+  CONFIG_CACHE="/data/local/tmp/f2fsopt_config_$$.cache"
+  rm -f "$CONFIG_CACHE"
+  
+  # Phase 1: 配置提取（如果旧模块存在）
+  SKIP_MIGRATION=0
+  if [ -d "$OLD_MODPATH" ]; then
+    # 读取新旧版本代码（versionCode 用于数字比较）
+    NEW_VERCODE=$(unzip -p "$ZIPFILE" module.prop 2>/dev/null | grep '^versionCode=' | cut -d= -f2 | tr -d '\r\n')
+    OLD_VERCODE=""
+    if [ -f "$OLD_MODPATH/module.prop" ]; then
+      OLD_VERCODE=$(grep '^versionCode=' "$OLD_MODPATH/module.prop" 2>/dev/null | cut -d= -f2 | tr -d '\r\n')
+    fi
+    
+    # 版本比较
+    if [ "$NEW_VERCODE" = "$OLD_VERCODE" ] && [ -n "$OLD_VERCODE" ]; then
+      # 相同版本，跳过配置迁移
+      SKIP_MIGRATION=1
+    elif [ -n "$OLD_VERCODE" ] && [ -n "$NEW_VERCODE" ]; then
+      # 版本升级，需要迁移配置
+      if [ "$NEW_VERCODE" -gt "$OLD_VERCODE" ] 2>/dev/null; then
+        # 读取版本名称用于显示
+        NEW_VERSION=$(unzip -p "$ZIPFILE" module.prop 2>/dev/null | grep '^version=' | cut -d= -f2 | tr -d '\r\n')
+        OLD_VERSION=$(grep '^version=' "$OLD_MODPATH/module.prop" 2>/dev/null | cut -d= -f2 | tr -d '\r\n')
+        ui_print "- 升级安装: $OLD_VERSION → $NEW_VERSION"
+      fi
+    fi
+  fi
+  
+  # 仅在需要迁移时执行配置提取
+  if [ "$SKIP_MIGRATION" = "0" ] && [ -d "$OLD_MODPATH" ]; then
+    # 定义配置参数白名单
+    SERVICE_PARAMS="SCHEDULE_MODE CRON_EXP SLEEP_HEARTBEAT LOG_MODE MAX_LOG_SIZE"
+    F2FSOPT_PARAMS="GC_DIRTY_MIN TRIM_TIMEOUT DEBUG_SCAN SLOW_MOUNT_THRESHOLD VERY_SLOW_THRESHOLD"
+    ACTION_PARAMS="AUTO_START_WEBUI WEBUI_PROMPT_TIMEOUT"
+    
+    # 临时定义简化版配置提取函数
+    _extract_config() {
+      _file="$1"; _key="$2"
+      [ -f "$_file" ] || return 1
+      
+      while IFS= read -r _line || [ -n "$_line" ]; do
+        # 跳过空行和注释
+        case "$_line" in '#'*|'') continue ;; esac
+        
+        # 匹配逻辑
+        _val=""
+        case "$_line" in
+          "${_key}="*)
+            _val="${_line#*=}"
+            ;;
+          "readonly ${_key}="*)
+            _val="${_line#*=}"
+            ;;
+          "export ${_key}="*)
+            _val="${_line#*=}"
+            ;;
+          *)
+            continue
+            ;;
+        esac
+        
+        # 如果匹配成功，处理值
+        if [ -n "$_val" ]; then
+          # 去除引号
+          case "$_val" in
+            \"*\") _val="${_val#\"}"; _val="${_val%\"}" ;;
+            \'*\') _val="${_val#\'}"; _val="${_val%\'}" ;;
+            *)
+              # 无引号：去除首尾空白
+              while case "$_val" in [' 	']*) true;; *) false;; esac; do
+                _val="${_val#?}"
+              done
+              while case "$_val" in *[' 	']) true;; *) false;; esac; do
+                _val="${_val%?}"
+              done
+              ;;
+          esac
+          printf '%s' "$_val"
+          return 0
+        fi
+      done < "$_file"
+      return 1
+    }
+    
+    # 静默提取所有配置到缓存文件（格式: PARAM=value）
+    for param in $SERVICE_PARAMS; do
+      [ -f "$OLD_MODPATH/service.sh" ] || continue
+      value=$(_extract_config "$OLD_MODPATH/service.sh" "$param")
+      [ -n "$value" ] && printf '%s=%s\n' "$param" "$value" >> "$CONFIG_CACHE"
+    done
+    
+    for param in $F2FSOPT_PARAMS; do
+      [ -f "$OLD_MODPATH/f2fsopt" ] || continue
+      value=$(_extract_config "$OLD_MODPATH/f2fsopt" "$param")
+      [ -n "$value" ] && printf '%s=%s\n' "$param" "$value" >> "$CONFIG_CACHE"
+    done
+    
+    for param in $ACTION_PARAMS; do
+      [ -f "$OLD_MODPATH/action.sh" ] || continue
+      value=$(_extract_config "$OLD_MODPATH/action.sh" "$param")
+      [ -n "$value" ] && printf '%s=%s\n' "$param" "$value" >> "$CONFIG_CACHE"
+    done
+  fi  # 结束配置提取条件块
+  
+  # Phase 2: 调用 install_module（会删除旧模块并安装新模块）
   install_module
+  
+  # Phase 3: 批量应用配置到新模块
+  if [ -f "$CONFIG_CACHE" ]; then
+    
+    # 批量配置应用函数
+    _apply_configs_batch() {
+      _acb_file="$1"
+      _acb_tmp="${_acb_file}.tmp"
+      _acb_applied=0
+      _acb_line=""
+      _acb_param=""
+      _acb_new_val=""
+      _acb_replaced=0
+      _acb_prefix=""
+      _acb_old_val=""
+      
+      # 验证目标文件存在
+      if [ ! -f "$_acb_file" ]; then
+        echo "0"
+        return 0
+      fi
+      
+      # 创建临时文件
+      if ! : > "$_acb_tmp" 2>/dev/null; then
+        echo "0"
+        return 0
+      fi
+      
+      # 预加载缓存到内存
+      _acb_cache_content=""
+      if [ -f "$CONFIG_CACHE" ]; then
+        _acb_cache_content=$(cat "$CONFIG_CACHE" 2>/dev/null)
+      fi
+      
+      # 逐行处理文件
+      while IFS= read -r _acb_line || [ -n "$_acb_line" ]; do
+        _acb_replaced=0
+        
+        # 跳过空行和注释行（防止误匹配）
+        case "$_acb_line" in
+          ''|'#'*|' #'*|'	#'*)
+            printf '%s\n' "$_acb_line" >> "$_acb_tmp"
+            continue
+            ;;
+        esac
+        
+        # 精确匹配配置行（仅匹配有效的配置赋值）
+        case "$_acb_line" in
+          readonly\ [A-Z_]*=*|export\ [A-Z_]*=*|[A-Z_]*=*)
+            # 提取参数名（处理 readonly/export 前缀）
+            _acb_prefix=""
+            _acb_param=""
+            
+            case "$_acb_line" in
+              readonly\ *)
+                _acb_prefix="readonly "
+                _acb_param="${_acb_line#readonly }"
+                _acb_param="${_acb_param%%=*}"
+                ;;
+              export\ *)
+                _acb_prefix="export "
+                _acb_param="${_acb_line#export }"
+                _acb_param="${_acb_param%%=*}"
+                ;;
+              *)
+                _acb_prefix=""
+                _acb_param="${_acb_line%%=*}"
+                ;;
+            esac
+            
+            # 去除参数名首尾空白
+            while case "$_acb_param" in [' 	']*) true;; *) false;; esac; do
+              _acb_param="${_acb_param#?}"
+            done
+            while case "$_acb_param" in *[' 	']) true;; *) false;; esac; do
+              _acb_param="${_acb_param%?}"
+            done
+            
+            # 验证参数名格式（仅大写字母和下划线）
+            case "$_acb_param" in
+              ''|*[!A-Z_]*)
+                # 无效参数名，保持原样
+                printf '%s\n' "$_acb_line" >> "$_acb_tmp"
+                continue
+                ;;
+            esac
+            
+            # 从内存缓存中查找新值
+            _acb_new_val=""
+            case "$_acb_cache_content" in
+              *"${_acb_param}="*)
+                # 提取匹配行
+                _acb_cache_line="${_acb_cache_content#*${_acb_param}=}"
+                _acb_cache_line="${_acb_cache_line%%
+*}"
+                
+                # 验证是否为精确匹配（防止部分匹配，如 GC_DIRTY 匹配到 GC_DIRTY_MIN）
+                case "$_acb_cache_content" in
+                  *"
+${_acb_param}="*|"${_acb_param}="*)
+                    _acb_new_val="$_acb_cache_line"
+                    ;;
+                esac
+                ;;
+            esac
+            
+            if [ -n "$_acb_new_val" ]; then
+              # 提取原值（用于保留格式）
+              _acb_old_val="${_acb_line#*=}"
+              
+              # 判断原值是否有引号
+              case "$_acb_old_val" in
+                \"*\"|\'*\')
+                  # 原值有引号，保留引号格式
+                  case "$_acb_old_val" in
+                    \"*\") printf '%s%s="%s"\n' "$_acb_prefix" "$_acb_param" "$_acb_new_val" >> "$_acb_tmp" ;;
+                    \'*\') printf "%s%s='%s'\n" "$_acb_prefix" "$_acb_param" "$_acb_new_val" >> "$_acb_tmp" ;;
+                  esac
+                  ;;
+                *)
+                  # 原值无引号，保持无引号格式
+                  printf '%s%s=%s\n' "$_acb_prefix" "$_acb_param" "$_acb_new_val" >> "$_acb_tmp"
+                  ;;
+              esac
+              
+              _acb_applied=$((_acb_applied + 1))
+              _acb_replaced=1
+            fi
+            ;;
+        esac
+        
+        # 如果未替换，保持原样
+        if [ "$_acb_replaced" = "0" ]; then
+          printf '%s\n' "$_acb_line" >> "$_acb_tmp"
+        fi
+      done < "$_acb_file"
+      
+      # 验证临时文件完整性（根据文件类型设置不同阈值）
+      if [ ! -f "$_acb_tmp" ]; then
+        echo "0"
+        return 0
+      fi
+      
+      _acb_size=$(wc -c < "$_acb_tmp" 2>/dev/null) || _acb_size=0
+      _acb_min_size=1024
+      
+      # 根据文件名设置最小大小阈值
+      case "$_acb_file" in
+        */service.sh) _acb_min_size=10240 ;;  # service.sh 至少 10KB
+        */f2fsopt)    _acb_min_size=10240 ;;  # f2fsopt 至少 10KB
+        */action.sh)  _acb_min_size=5120 ;;   # action.sh 至少 5KB
+        *)            _acb_min_size=1024 ;;   # 其他文件至少 1KB
+      esac
+      
+      if [ "$_acb_size" -lt "$_acb_min_size" ] 2>/dev/null; then
+        rm -f "$_acb_tmp"
+        echo "0"
+        return 0
+      fi
+      
+      # 原子替换
+      if mv "$_acb_tmp" "$_acb_file" 2>/dev/null; then
+        echo "$_acb_applied"
+        return 0
+      else
+        rm -f "$_acb_tmp"
+        echo "0"
+        return 1
+      fi
+    }
+    
+    # 批量应用到每个文件
+    MIGRATED=0
+    
+    _count=$(_apply_configs_batch "$MODPATH/service.sh")
+    MIGRATED=$((MIGRATED + _count))
+    
+    _count=$(_apply_configs_batch "$MODPATH/f2fsopt")
+    MIGRATED=$((MIGRATED + _count))
+    
+    _count=$(_apply_configs_batch "$MODPATH/action.sh")
+    MIGRATED=$((MIGRATED + _count))
+    
+    # 显示结果（仅在有迁移时显示）
+    if [ "$MIGRATED" -gt 0 ]; then
+      ui_print "- 已迁移 $MIGRATED 项配置"
+    fi
+    
+    rm -f "$CONFIG_CACHE"
+  fi
+  
   exit 0
 fi
 
@@ -98,9 +416,296 @@ MODID=`grep_prop id $TMPDIR/module.prop`
 MODPATH=$MODULEROOT/$MODID
 MODNAME=`grep_prop name $TMPDIR/module.prop`
 
-# 创建 mod 路径
-rm -rf $MODPATH 2>/dev/null
-mkdir -p $MODPATH
+##############
+# 配置迁移函数
+##############
+
+is_integer() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# 从配置文件中提取指定参数的值
+get_config_value() {
+    _gcv_file="$1"
+    _gcv_key="$2"
+    _gcv_line=""
+    _gcv_val=""
+    
+    # 验证文件存在
+    [ -f "$_gcv_file" ] || return 1
+    
+    # 逐行读取文件
+    while IFS= read -r _gcv_line || [ -n "$_gcv_line" ]; do
+        # 跳过空行
+        [ -z "$_gcv_line" ] && continue
+        
+        # 跳过纯注释行
+        case "$_gcv_line" in '#'*) continue ;; esac
+        
+        # 匹配配置键（支持 KEY=, readonly KEY=, export KEY=）
+        case "$_gcv_line" in
+            "${_gcv_key}="*|"readonly ${_gcv_key}="*|"export ${_gcv_key}="*)
+                # 提取等号后的值
+                _gcv_val="${_gcv_line#*=}"
+                
+                # 去除引号（双引号或单引号）
+                case "$_gcv_val" in
+                    \"*)
+                        _gcv_val="${_gcv_val#\"}"
+                        _gcv_val="${_gcv_val%%\"*}"
+                        ;;
+                    \'*)
+                        _gcv_val="${_gcv_val#\'}"
+                        _gcv_val="${_gcv_val%%\'*}"
+                        ;;
+                    *)
+                        # 无引号：去除行尾注释（仅当 # 前有空白时）
+                        case "$_gcv_val" in
+                            *[' 	']#*)
+                                while case "$_gcv_val" in *[' 	']#*) true;; *) false;; esac; do
+                                    _gcv_val="${_gcv_val%%[' 	']#*}"
+                                done
+                                ;;
+                        esac
+                        
+                        # 去除首尾空白字符
+                        while case "$_gcv_val" in [' 	']*) true;; *) false;; esac; do
+                            _gcv_val="${_gcv_val#?}"
+                        done
+                        while case "$_gcv_val" in *[' 	']) true;; *) false;; esac; do
+                            _gcv_val="${_gcv_val%?}"
+                        done
+                        ;;
+                esac
+                
+                # 输出处理后的值
+                printf '%s' "$_gcv_val"
+                return 0
+                ;;
+        esac
+    done < "$_gcv_file"
+    
+    # 键不存在
+    return 1
+}
+
+# 过滤配置值中的危险字符
+sanitize_config_value() {
+    _scv_value="$1"
+    
+    # 检查危险字符
+    case "$_scv_value" in
+        *'$('*|*'`'*|*';'*|*'|'*|*'&'*|*'>'*|*'<'*|*'('*|*')'*)
+            return 1
+            ;;
+    esac
+    
+    # 输出清理后的值
+    printf '%s' "$_scv_value"
+    return 0
+}
+
+# 验证配置参数值的合法性
+validate_config_value() {
+    _vcv_param="$1"
+    _vcv_value="$2"
+    
+    case "$_vcv_param" in
+        SCHEDULE_MODE)
+            case "$_vcv_value" in
+                sleep|cron) return 0 ;;
+                *) return 1 ;;
+            esac
+            ;;
+        CRON_EXP)
+            # 验证 Cron 表达式格式（5段）
+            set -f; set -- $_vcv_value; set +f
+            [ "$#" -eq 5 ] && return 0 || return 1
+            ;;
+        SLEEP_HEARTBEAT|MAX_LOG_SIZE|GC_DIRTY_MIN|TRIM_TIMEOUT|SLOW_MOUNT_THRESHOLD|VERY_SLOW_THRESHOLD)
+            # 验证整数
+            is_integer "$_vcv_value" && return 0 || return 1
+            ;;
+        LOG_MODE)
+            case "$_vcv_value" in
+                NONE|INFO|DEBUG) return 0 ;;
+                *) return 1 ;;
+            esac
+            ;;
+        DEBUG_SCAN)
+            case "$_vcv_value" in
+                0|1) return 0 ;;
+                *) return 1 ;;
+            esac
+            ;;
+        AUTO_START_WEBUI)
+            case "$_vcv_value" in
+                true|false|ask) return 0 ;;
+                *) return 1 ;;
+            esac
+            ;;
+        WEBUI_PROMPT_TIMEOUT)
+            # 验证整数且范围 1-60
+            if is_integer "$_vcv_value"; then
+                if [ "$_vcv_value" -ge 1 ] 2>/dev/null && [ "$_vcv_value" -le 60 ] 2>/dev/null; then
+                    return 0
+                fi
+            fi
+            return 1
+            ;;
+        *)
+            # 未知参数，默认通过
+            return 0
+            ;;
+    esac
+}
+
+# 验证文件完整性（存在性、大小、可读性）
+validate_file_integrity() {
+    _vfi_file="$1"
+    _vfi_min_size="${2:-1024}"
+    _vfi_size=0
+    
+    # 检查文件存在
+    [ -f "$_vfi_file" ] || return 1
+    
+    # 检查文件大小
+    if command -v stat >/dev/null 2>&1; then
+        _vfi_size=$(stat -c%s "$_vfi_file" 2>/dev/null) || _vfi_size=0
+    else
+        _vfi_size=$(wc -c < "$_vfi_file" 2>/dev/null) || _vfi_size=0
+    fi
+    
+    [ "$_vfi_size" -ge "$_vfi_min_size" ] 2>/dev/null || return 2
+    
+    # 检查文件可读性
+    head -n 1 "$_vfi_file" >/dev/null 2>&1 || return 3
+    
+    return 0
+}
+
+# 应用配置参数到文件
+apply_config_to_file() {
+    _actf_file="$1"
+    _actf_param="$2"
+    _actf_value="$3"
+    _actf_backup="${_actf_file}.backup"
+    _actf_tmp="${_actf_file}.tmp"
+    
+    # 创建备份
+    cp "$_actf_file" "$_actf_backup" 2>/dev/null || return 1
+    
+    # 纯 Shell 实现
+    while IFS= read -r _actf_line || [ -n "$_actf_line" ]; do
+        case "$_actf_line" in
+            "readonly ${_actf_param}="*)
+                # 保留 readonly 关键字，替换值
+                printf 'readonly %s="%s"\n' "$_actf_param" "$_actf_value"
+                ;;
+            "${_actf_param}="*)
+                # 普通赋值，替换值
+                printf '%s="%s"\n' "$_actf_param" "$_actf_value"
+                ;;
+            *)
+                # 非目标行，原样输出
+                printf '%s\n' "$_actf_line"
+                ;;
+        esac
+    done < "$_actf_file" > "$_actf_tmp"
+    
+    # 验证临时文件完整性
+    _actf_min_size=1024
+    case "$_actf_file" in
+        */service.sh) _actf_min_size=10240 ;;
+        */f2fsopt) _actf_min_size=10240 ;;
+    esac
+    
+    if ! validate_file_integrity "$_actf_tmp" "$_actf_min_size"; then
+        rm -f "$_actf_tmp" 2>/dev/null
+        mv "$_actf_backup" "$_actf_file" 2>/dev/null
+        return 1
+    fi
+    
+    # 原子替换
+    if mv "$_actf_tmp" "$_actf_file" 2>/dev/null; then
+        if ! validate_file_integrity "$_actf_file" "$_actf_min_size"; then
+            mv "$_actf_backup" "$_actf_file" 2>/dev/null
+            return 1
+        fi
+        rm -f "$_actf_backup" 2>/dev/null
+        return 0
+    else
+        mv "$_actf_backup" "$_actf_file" 2>/dev/null
+        rm -f "$_actf_tmp" 2>/dev/null
+        return 1
+    fi
+}
+
+# 创建 mod 路径 + 配置迁移主流程
+##############
+# 配置迁移（Magisk v19.0-v20.3）
+##############
+
+# 定义配置参数白名单
+SERVICE_PARAMS="SCHEDULE_MODE CRON_EXP SLEEP_HEARTBEAT LOG_MODE MAX_LOG_SIZE"
+F2FSOPT_PARAMS="GC_DIRTY_MIN TRIM_TIMEOUT DEBUG_SCAN SLOW_MOUNT_THRESHOLD VERY_SLOW_THRESHOLD"
+ACTION_PARAMS="AUTO_START_WEBUI WEBUI_PROMPT_TIMEOUT"
+
+# 检测是否为升级安装
+IS_UPGRADE=false
+STAGING_DIR="$TMPDIR/staging"
+MIGRATED_COUNT=0
+
+if [ -d "$MODPATH" ]; then
+  # Phase 1: 配置提取（升级安装）
+  IS_UPGRADE=true
+  
+  # 读取新旧版本代码（versionCode 用于数字比较）
+  NEW_VERCODE=$(unzip -p "$ZIPFILE" module.prop 2>/dev/null | grep '^versionCode=' | cut -d= -f2 | tr -d '\r\n')
+  OLD_VERCODE=$(grep_prop versionCode "$MODPATH/module.prop")
+  
+  # 版本比较（使用 versionCode 数字比较）
+  if [ "$NEW_VERCODE" = "$OLD_VERCODE" ] && [ -n "$OLD_VERCODE" ]; then
+    # 相同版本，跳过配置迁移（无感刷入）
+    IS_UPGRADE=false
+  elif [ -n "$OLD_VERCODE" ] && [ -n "$NEW_VERCODE" ]; then
+    # 版本升级，需要迁移配置
+    if [ "$NEW_VERCODE" -gt "$OLD_VERCODE" ] 2>/dev/null; then
+      # 读取版本名称用于显示
+      NEW_VERSION=$(unzip -p "$ZIPFILE" module.prop 2>/dev/null | grep '^version=' | cut -d= -f2 | tr -d '\r\n')
+      OLD_VERSION=$(grep_prop version "$MODPATH/module.prop")
+      ui_print "- 升级安装: $OLD_VERSION → $NEW_VERSION"
+      
+      # 静默提取旧配置到内存变量（OLD_PARAM_NAME 格式）
+      for param in $SERVICE_PARAMS; do
+        value=$(get_config_value "$MODPATH/service.sh" "$param")
+        [ -n "$value" ] && eval "OLD_${param}=\"$value\""
+      done
+      
+      for param in $F2FSOPT_PARAMS; do
+        value=$(get_config_value "$MODPATH/f2fsopt" "$param")
+        [ -n "$value" ] && eval "OLD_${param}=\"$value\""
+      done
+      
+      for param in $ACTION_PARAMS; do
+        value=$(get_config_value "$MODPATH/action.sh" "$param")
+        [ -n "$value" ] && eval "OLD_${param}=\"$value\""
+      done
+    fi
+  fi
+  
+  # Phase 2: 暂存准备（仅在需要迁移时创建暂存目录）
+  if [ "$IS_UPGRADE" = true ]; then
+    rm -rf "$STAGING_DIR" 2>/dev/null
+    mkdir -p "$STAGING_DIR" || abort "! 无法创建暂存目录"
+  fi
+else
+  # 全新安装（直接创建模块目录）
+  mkdir -p "$MODPATH"
+fi
 
 ##########
 # 安装
@@ -139,14 +744,75 @@ if is_legacy_script; then
 else
   print_modname
 
-  unzip -o "$ZIPFILE" customize.sh -d $MODPATH >&2
+  # 根据是否升级决定解压目标
+  if [ "$IS_UPGRADE" = true ]; then
+    TARGET_DIR="$STAGING_DIR"
+  else
+    TARGET_DIR="$MODPATH"
+  fi
 
-  if ! grep -q '^SKIPUNZIP=1$' $MODPATH/customize.sh 2>/dev/null; then
+  unzip -o "$ZIPFILE" customize.sh -d $TARGET_DIR >&2
+
+  if ! grep -q '^SKIPUNZIP=1$' $TARGET_DIR/customize.sh 2>/dev/null; then
     ui_print "- 提取文件"
-    unzip -o "$ZIPFILE" -x 'META-INF/*' -d $MODPATH >&2
+    unzip -o "$ZIPFILE" -x 'META-INF/*' -d $TARGET_DIR >&2
 
     # 默认权限
-    set_perm_recursive $MODPATH 0 0 0755 0644
+    set_perm_recursive $TARGET_DIR 0 0 0755 0644
+  fi
+
+  # Phase 3: 配置应用（如果是升级安装）
+  if [ "$IS_UPGRADE" = true ]; then
+    # 遍历所有配置参数，静默应用
+    for param in $SERVICE_PARAMS $F2FSOPT_PARAMS $ACTION_PARAMS; do
+      eval "value=\$OLD_${param}"
+      [ -z "$value" ] && continue
+      
+      # 步骤 1: 安全过滤（检测危险字符）
+      clean_value=$(sanitize_config_value "$value")
+      [ $? -ne 0 ] && continue
+      
+      # 步骤 2: 验证配置值（类型和范围检查）
+      validate_config_value "$param" "$clean_value" || continue
+      
+      # 步骤 3: 确定目标文件
+      target_file="$STAGING_DIR/service.sh"
+      case "$param" in
+        GC_DIRTY_MIN|TRIM_TIMEOUT|DEBUG_SCAN|SLOW_MOUNT_THRESHOLD|VERY_SLOW_THRESHOLD)
+          target_file="$STAGING_DIR/f2fsopt" ;;
+        AUTO_START_WEBUI|WEBUI_PROMPT_TIMEOUT)
+          target_file="$STAGING_DIR/action.sh" ;;
+      esac
+      
+      # 步骤 4: 应用配置到文件
+      if apply_config_to_file "$target_file" "$param" "$clean_value"; then
+        MIGRATED_COUNT=$((MIGRATED_COUNT + 1))
+      fi
+    done
+    
+    # 显示迁移结果（仅在有迁移时显示）
+    [ "$MIGRATED_COUNT" -gt 0 ] && ui_print "- 已迁移 $MIGRATED_COUNT 项配置"
+    
+    # Phase 4: 最终部署（验证并移动到最终位置）
+    # 验证关键文件完整性
+    if ! validate_file_integrity "$STAGING_DIR/service.sh" 10240 || \
+       ! validate_file_integrity "$STAGING_DIR/f2fsopt" 10240; then
+      # 验证失败，使用默认配置
+      rm -rf "$STAGING_DIR" 2>/dev/null
+      mkdir -p "$MODPATH"
+      unzip -o "$ZIPFILE" -x 'META-INF/*' -d "$MODPATH" >&2
+      set_perm_recursive "$MODPATH" 0 0 0755 0644
+    else
+      # 验证通过，移动到最终位置
+      rm -rf "$MODPATH" 2>/dev/null
+      if ! mv "$STAGING_DIR" "$MODPATH" 2>/dev/null; then
+        # 移动失败，使用默认配置
+        rm -rf "$STAGING_DIR" 2>/dev/null
+        mkdir -p "$MODPATH"
+        unzip -o "$ZIPFILE" -x 'META-INF/*' -d "$MODPATH" >&2
+        set_perm_recursive "$MODPATH" 0 0 0755 0644
+      fi
+    fi
   fi
 
   # 加载自定义脚本
