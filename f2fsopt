@@ -6,38 +6,85 @@
 # ==============================================================================
 # 退出码定义
 # ==============================================================================
-readonly EXIT_SUCCESS=0        # 成功
-readonly EXIT_LOCK_CONFLICT=1  # 锁冲突（另一个实例正在运行）
-readonly EXIT_CONDITION=2      # 条件不满足（未充电/亮屏等）
-readonly EXIT_NO_ROOT=3        # 无 Root 权限
-readonly EXIT_TOOL_MISSING=127 # 必需工具缺失
+
+# 成功
+readonly EXIT_SUCCESS=0
+
+# 锁冲突（另一个实例正在运行）
+readonly EXIT_LOCK_CONFLICT=1
+
+# 条件不满足（未充电/亮屏等）
+readonly EXIT_CONDITION=2
+
+# 无 Root 权限
+readonly EXIT_NO_ROOT=3
+
+# 必需工具缺失
+readonly EXIT_TOOL_MISSING=127
 
 # ==============================================================================
 # 配置区域
 # ==============================================================================
 
 # 功能开关
-readonly ENABLE_MAGISK_UI=true      # 更新模块描述
-readonly ENABLE_SMART_GC=true       # 健康分区跳过GC
-readonly ENABLE_SMART_TRIM=true     # 健康分区跳过Trim
-readonly STOP_ON_SCREEN_ON=false    # 亮屏中断
-readonly ONLY_CHARGING=false        # 仅充电时运行
+
+# 更新模块描述
+readonly ENABLE_MAGISK_UI=true
+
+# 发送系统通知 (仅支持 Android 10+)
+readonly ENABLE_NOTIFICATIONS=true
+
+# 健康分区跳过 GC
+readonly ENABLE_SMART_GC=true
+
+# 健康分区跳过 Trim
+readonly ENABLE_SMART_TRIM=true
+
+# 亮屏时中断执行
+readonly STOP_ON_SCREEN_ON=false
+
+# 仅在充电时运行
+readonly ONLY_CHARGING=false
 
 # GC 策略
-readonly ENABLE_TURBO_GC=true       # 启用极速GC
-readonly GC_MODE_PREF="1"           # GC模式: 1=前台 2=后台 (注: 内核可能返回 3/5 等扩展枚举，属正常)
-GC_DIRTY_MIN=200                    # 脏段阈值（可配置）
-readonly GC_TURBO_SLEEP=50          # 极速GC睡眠(ms)
-readonly GC_SAFE_SLEEP=500          # 安全GC睡眠(ms)
-readonly GC_MAX_SEC=500             # 最大运行时长(秒)
-readonly GC_STABLE_CNT=8           # 稳定计数
-TRIM_TIMEOUT=500                    # Trim超时(秒)（可配置）
-readonly GC_POLL=1                  # 轮询间隔(秒)
+
+# 启用极速 GC 模式
+readonly ENABLE_TURBO_GC=true
+
+# GC 模式：1=前台 2=后台（注：内核可能返回 3/5 等扩展枚举，属正常）
+readonly GC_MODE_PREF="1"
+
+# 脏段阈值，超过此值触发 GC（可配置，范围：50-1000）
+GC_DIRTY_MIN=200
+
+# 极速 GC 睡眠间隔，单位毫秒
+readonly GC_TURBO_SLEEP=50
+
+# 安全 GC 睡眠间隔，单位毫秒
+readonly GC_SAFE_SLEEP=500
+
+# 最大运行时长，单位秒
+readonly GC_MAX_SEC=500
+
+# 稳定计数阈值
+readonly GC_STABLE_CNT=8
+
+# Trim 超时时间，单位秒（可配置，范围：60-3600）
+TRIM_TIMEOUT=500
+
+# GC 轮询间隔，单位秒
+readonly GC_POLL=1
 
 # 扫描性能诊断
-readonly DEBUG_SCAN=1               # 挂载点扫描诊断: 0=禁用 1=启用
-readonly SLOW_MOUNT_THRESHOLD=1000  # 毫秒，超过此值输出信息
-readonly VERY_SLOW_THRESHOLD=1500  # 毫秒，超过此值输出警告
+
+# 挂载点扫描诊断开关：0=禁用 1=启用
+DEBUG_SCAN=1
+
+# 慢速挂载阈值，单位毫秒，超过此值输出信息
+SLOW_MOUNT_THRESHOLD=1000
+
+# 极慢挂载阈值，单位毫秒，超过此值输出警告
+VERY_SLOW_THRESHOLD=1500
 
 # 系统路径
 # 注意: 如果修改 LOCK_DIR，请务必同步修改 action.sh 中的 F2FSOPT_LOCK_DIR
@@ -60,13 +107,45 @@ readonly REQUIRED_TOOLS="stat readlink fstrim timeout ls mkdir rm rmdir sleep da
 # 环境初始化
 # ==============================================================================
 
-if [ -L "$0" ]; then
-    _script_real=$(readlink -f "$0" 2>/dev/null)
-    [ -n "$_script_real" ] && MODDIR="${_script_real%/*}" || MODDIR="${0%/*}"
+# 初始化模块目录
+_f2fs_script="$0"
+_f2fs_dir=""
+
+# 1. 处理符号链接
+if [ -L "$_f2fs_script" ]; then
+    _f2fs_real=$(readlink -f "$_f2fs_script" 2>/dev/null)
+    if [ -n "$_f2fs_real" ]; then
+        _f2fs_dir="${_f2fs_real%/*}"
+    else
+        _f2fs_dir="${_f2fs_script%/*}"
+    fi
 else
-    MODDIR="${0%/*}"
+    _f2fs_dir="${_f2fs_script%/*}"
 fi
 
+# 2. 确保绝对路径
+case "$_f2fs_dir" in
+    /*) MODDIR="$_f2fs_dir" ;;
+    *)  MODDIR="$(cd "$_f2fs_dir" 2>/dev/null && pwd)" ;;
+esac
+
+# 3. 验证 MODDIR 有效性
+if [ -z "$MODDIR" ]; then
+    printf '致命错误: 无法初始化模块目录\n' >&2
+    exit 1
+fi
+
+# 如果 MODDIR 不存在，使用当前目录
+if [ ! -d "$MODDIR" ]; then
+    # 尝试使用当前工作目录作为回退
+    if [ -n "$PWD" ] && [ -d "$PWD" ]; then
+        MODDIR="$PWD"
+    else
+        :  # 空操作，保持 MODDIR 为解析出的路径
+    fi
+fi
+
+readonly MODDIR
 readonly SCRIPT_NAME="${0##*/}"
 START_TIME=$(date +%s)
 
@@ -85,9 +164,12 @@ COUNT_SCREEN_SKIP=0
 COUNT_SYS_API=0
 LIST_FAIL=""
 EXIT_CODE=0
-SM_FSTRIM_CALLED=false       # sm fstrim 全局调用标记
-SM_IDLE_MAINT_CALLED=false   # sm idle-maint 全局调用标记
-LOG_WRITE_COUNT=0            # 日志写入计数器
+
+# sm fstrim 全局调用标记
+SM_FSTRIM_CALLED=false
+
+# sm idle-maint 全局调用标记
+SM_IDLE_MAINT_CALLED=false
 
 # 并发控制变量初始化
 HAS_ACQUIRED_WAKELOCK=false
@@ -98,25 +180,53 @@ RESTORE_SLEEP_VAL=""
 
 export LC_ALL=C
 
+# SYNC: Busybox 探测路径 - 与 service.sh init_busybox() 保持一致
+# 更新时请同步修改 service.sh
 # 查找 Busybox
 BB_PATH=""
-for p in "/data/adb/magisk/busybox" "/data/adb/ksu/bin/busybox" "/data/adb/ap/bin/busybox" "/sbin/.magisk/busybox" "/system/xbin/busybox" "/system/bin/busybox" "$(command -v busybox)"; do
-    if [ -x "$p" ]; then 
-        BB_PATH="$p"
-        export PATH="${BB_PATH%/*}:$PATH"
-        break
+_bb_p=""
+
+# 幂等性检查 - 如果已经找到可用的 Busybox，直接跳过
+if [ -z "$BB_PATH" ] || [ ! -x "$BB_PATH" ]; then
+    # 遍历预定义路径列表
+    for _bb_p in \
+        "/data/adb/magisk/busybox" \
+        "/data/adb/ksu/bin/busybox" \
+        "/data/adb/ap/bin/busybox" \
+        "/system/bin/busybox"; do
+        
+        if [ -x "$_bb_p" ]; then
+            BB_PATH="$_bb_p"
+            export PATH="${BB_PATH%/*}:$PATH"
+            break
+        fi
+    done
+    
+    # 动态回退 - 尝试通过 command -v 查找
+    if [ -z "$BB_PATH" ]; then
+        _bb_p=$(command -v busybox 2>/dev/null)
+        if [ -n "$_bb_p" ] && [ -x "$_bb_p" ]; then
+            BB_PATH="$_bb_p"
+            export PATH="${BB_PATH%/*}:$PATH"
+        fi
     fi
-done
+fi
+
+# 未找到 Busybox 时记录警告（但继续执行）
+[ -z "$BB_PATH" ] && log_msg "警告: 未找到 Busybox,将使用系统命令"
 
 # 1. 定义busybox代理 (全代理模式 + 安全过滤)
 init_command_proxy() {
-    # 基础检查
-    if [ -z "$BB_PATH" ] || [ ! -x "$BB_PATH" ]; then return 1; fi
+    # 基础检查 - BB_PATH 无效时静默返回失败
+    [ -z "$BB_PATH" ] || [ ! -x "$BB_PATH" ] && return 1
     
     _icp_cmd=""; _icp_bb_caps=""; _icp_type_out=""
     
     # 1. 获取 Busybox 能力清单并清洗格式
     _icp_bb_caps=$("$BB_PATH" --list 2>/dev/null)
+    
+    # 验证能力清单获取成功
+    [ -z "$_icp_bb_caps" ] && return 1
     
     # 2. 批量过滤：Shell builtin/reserved
     # 预定义 Shell 核心命令黑名单，避免重复 type 调用
@@ -147,10 +257,11 @@ init_command_proxy() {
     
     # 5. 刷新 Shell 哈希表
     hash -r 2>/dev/null || true
+    return 0
 }
 
-# 执行代理初始化
-init_command_proxy
+# 执行代理初始化 - 失败时记录警告但继续
+init_command_proxy || log_msg "命令代理初始化失败,将使用系统命令"
 
 HAS_TIMEOUT=false
 HAS_STAT=false
@@ -236,64 +347,42 @@ if [ "$TRIM" = false ] && [ "$GC" = false ]; then TRIM=true; GC=true; fi
 
 is_integer() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac }
 
-LOG_TIMESTAMP=""
-LOG_TIMESTAMP_EPOCH=0
-update_log_timestamp() {
-    _ult_now=$(date +%s); _ult_elapsed=0
-    if is_integer "$_ult_now" && is_integer "$LOG_TIMESTAMP_EPOCH"; then _ult_elapsed=$((_ult_now - LOG_TIMESTAMP_EPOCH)); else _ult_elapsed=999; fi
-    if [ "$_ult_elapsed" -ge 5 ] || [ -z "$LOG_TIMESTAMP" ]; then
-        LOG_TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
-        is_integer "$_ult_now" && LOG_TIMESTAMP_EPOCH=$_ult_now
-    fi
+# 日志配置验证
+validate_log_mode() {
+    _vlm_mode="$1"
+    case "$_vlm_mode" in
+        NONE|INFO|DEBUG) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
-# 日志轮替
-check_log_size_robust() {
-    _clsr_log="${LOG_FILE:-$MODDIR/service.log}"
-    
-    [ ! -f "$_clsr_log" ] && return 0
-    
-    _clsr_size=0
-    if command -v stat >/dev/null 2>&1; then
-        _clsr_size=$(stat -c%s "$_clsr_log" 2>/dev/null) || _clsr_size=0
-    else
-        _clsr_size=$(wc -c < "$_clsr_log" 2>/dev/null) || _clsr_size=0
+# 验证并修正 LOG_MODE 配置
+if [ -n "$LOG_MODE" ]; then
+    if ! validate_log_mode "$LOG_MODE"; then
+        log_msg "⚠️ LOG_MODE=$LOG_MODE 无效，使用默认值 INFO"
+        LOG_MODE="INFO"
     fi
-    
-    case "$_clsr_size" in *[!0-9]*) _clsr_size=0 ;; esac
-    
-    if [ "$_clsr_size" -gt 524288 ]; then  # 512KB
-        # 尝试轮替
-        if mv "$_clsr_log" "${_clsr_log}.bak" 2>/dev/null; then
-            if command -v tail >/dev/null 2>&1; then
-                if tail -n 200 "${_clsr_log}.bak" > "$_clsr_log" 2>/dev/null; then
-                    rm "${_clsr_log}.bak" 2>/dev/null
-                    return 0
-                fi
-            else
-                # 回退: tail 不可用时直接清空日志
-                : > "$_clsr_log"
-                rm "${_clsr_log}.bak" 2>/dev/null
-                return 0
-            fi
-        fi
-        
-        # 轮替失败，回退到 /dev/null
-        update_log_timestamp
-        printf '%s %s\n' "$LOG_TIMESTAMP" "⚠️ 日志轮替失败，回退到 /dev/null" >&2
-        exec 2>/dev/null
-    fi
+else
+    LOG_MODE="INFO"
+fi
+
+# ==============================================================================
+# 日志函数
+# ==============================================================================
+
+log_msg() {
+    [ "${LOG_MODE:-INFO}" = "NONE" ] && return 0
+    printf '%s I %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >&2
 }
 
-log_msg() { 
-    update_log_timestamp
-    printf '%s %s\n' "$LOG_TIMESTAMP" "$1" >&2
-    
-    # 定期检查日志大小（每 10 次写入检查一次）
-    LOG_WRITE_COUNT=$((LOG_WRITE_COUNT + 1))
-    if [ "$((LOG_WRITE_COUNT % 10))" -eq 0 ]; then
-        check_log_size_robust
-    fi
+log_warn() {
+    [ "${LOG_MODE:-INFO}" = "NONE" ] && return 0
+    printf '%s W %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >&2
+}
+
+log_err() {
+    # 设计决策：错误日志始终记录，用于故障排查
+    printf '%s E %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >&2
 }
 
 # 获取毫秒时间戳
@@ -397,6 +486,121 @@ update_magisk_ui() {
     } > "$_umu_tmp" 2>/dev/null && mv "$_umu_tmp" "$MODDIR/module.prop" 2>/dev/null
     # 清理失败残留
     rm -f "$_umu_tmp" 2>/dev/null
+}
+
+# ==============================================================================
+# 通用通知发送函数
+# ==============================================================================
+send_notification() {
+    _sn_msg="$1"
+    
+    # 1. 基础环境检查
+    [ "$ENABLE_NOTIFICATIONS" = true ] || return 0
+    
+    if ! command -v cmd >/dev/null 2>&1; then
+        log_msg "[通知] cmd 命令不可用"
+        return 0
+    fi
+    
+    # 2. Android 版本检查（通知功能需要 Android 5.0+）
+    _sn_sdk=$(getprop ro.build.version.sdk 2>/dev/null)
+    case "$_sn_sdk" in *[!0-9]*) _sn_sdk=0 ;; esac
+    if [ "$_sn_sdk" -lt 21 ] 2>/dev/null; then
+        log_msg "[通知] Android 版本过低 (SDK: $_sn_sdk)"
+        return 0
+    fi
+    
+    # 3. 截断过长文本（防止系统拒收）
+    _sn_date_suffix=" 🕒日期:$(date '+%Y-%m-%d %H:%M:%S')"
+    _sn_max_len=$((1024 - ${#_sn_date_suffix}))
+    
+    if [ "${#_sn_msg}" -gt "$_sn_max_len" ]; then
+        _sn_msg="$(printf '%.'"$((${_sn_max_len} - 3))"'s' "$_sn_msg")..."
+        log_msg "[通知] 内容已截断"
+    fi
+    
+    # 添加日期时间后缀
+    _sn_msg="$_sn_msg$_sn_date_suffix"
+    
+    # 4. 构造核心命令
+    # -S bigtext: 展开长文本
+    # -t: 标题
+    # 不指定 -i (图标): 使用系统默认，避免 invalid icon 错误
+    # 不指定 -c (渠道): 自动落入 shell_cmd 默认渠道
+    _sn_tag="f2fs_opt"
+    _sn_title="F2FS Optimizer"
+    
+    # 转义单引号（防止命令注入）
+    _sn_msg_escaped=""
+    _sn_rest="$_sn_msg"
+    while case "$_sn_rest" in *"'"*) true;; *) false;; esac; do
+        _sn_before="${_sn_rest%%\'*}"
+        _sn_msg_escaped="$_sn_msg_escaped$_sn_before'\\''"
+        _sn_rest="${_sn_rest#*\'}"
+    done
+    _sn_msg_escaped="$_sn_msg_escaped$_sn_rest"
+    
+    _sn_core_cmd="cmd notification post -S bigtext -t '$_sn_title' '$_sn_tag' '$_sn_msg_escaped'"
+    
+    # 5. 身份切换发送
+    _sn_ret=1
+    
+    if [ "$(id -u)" -eq 0 ]; then
+        # Root 环境：尝试切换到 Shell 用户
+        if command -v su >/dev/null 2>&1 && su 2000 -c "true" >/dev/null 2>&1; then
+            # 使用 su 切换身份发送
+            if [ "$HAS_TIMEOUT" = true ]; then
+                $TIMEOUT_CMD 3 su 2000 -c "$_sn_core_cmd" >/dev/null 2>&1
+                _sn_ret=$?
+            else
+                su 2000 -c "$_sn_core_cmd" >/dev/null 2>&1
+                _sn_ret=$?
+            fi
+            
+            if [ "$_sn_ret" -eq 0 ]; then
+                log_msg "[通知] 发送成功 (Shell 身份)"
+                return 0
+            else
+                log_msg "[通知] Shell 身份发送失败 [退出码: $_sn_ret]"
+            fi
+        else
+            log_msg "[通知] 无法切换到 Shell 用户，尝试直接发送"
+        fi
+        
+        # 回退：直接以 Root 身份发送（可能被拦截）
+        if [ "$HAS_TIMEOUT" = true ]; then
+            $TIMEOUT_CMD 3 eval "$_sn_core_cmd" >/dev/null 2>&1
+            _sn_ret=$?
+        else
+            eval "$_sn_core_cmd" >/dev/null 2>&1
+            _sn_ret=$?
+        fi
+        
+        if [ "$_sn_ret" -eq 0 ]; then
+            log_msg "[通知] 发送成功 (Root 身份，可能被系统拦截)"
+            return 0
+        else
+            log_warn "[通知] 发送失败 [退出码: $_sn_ret]"
+            return 1
+        fi
+    else
+        # 非 Root 环境（罕见），直接发送
+        if [ "$HAS_TIMEOUT" = true ]; then
+            $TIMEOUT_CMD 3 eval "$_sn_core_cmd" >/dev/null 2>&1
+            _sn_ret=$?
+        else
+            eval "$_sn_core_cmd" >/dev/null 2>&1
+            _sn_ret=$?
+        fi
+        
+        if [ "$_sn_ret" -eq 0 ]; then
+            log_msg "[通知] 发送成功"
+            return 0
+        else
+            log_warn "[通知] 发送失败 [退出码: $_sn_ret]"
+            return 1
+        fi
+    fi
 }
 
 # 解析设备路径：处理符号链接
@@ -1701,4 +1905,5 @@ SUMMARY="🧹Trim:${SHOW_TRIM} ♻️GC:${SHOW_GC} ⏱️耗时:${DURATION}秒"
 log_msg "=== 执行完成 ==="
 log_msg "$SUMMARY"
 update_magisk_ui "$SUMMARY"
+send_notification "$SUMMARY"
 cleanup $EXIT_SUCCESS

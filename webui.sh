@@ -24,7 +24,24 @@ fi
 
 # 3. 调用共享初始化函数
 init_moddir "$0" || { printf '致命错误: 无法初始化模块目录\n' >&2; exit 1; }
-init_busybox || { printf '致命错误: 找不到 Busybox\n' >&2; exit 1; }
+init_busybox  # 失败时仅记录警告,不强制退出
+
+# 3.1 检查 httpd 可用性 (Web UI 必需)
+HAS_HTTPD=false
+if [ -n "$BB_PATH" ] && [ -x "$BB_PATH" ]; then
+    # 使用 echo 将换行符转为空格,确保 case 匹配正确
+    _webui_bb_list=" $(echo $("$BB_PATH" --list 2>/dev/null)) "
+    case "$_webui_bb_list" in
+        *" httpd "*) HAS_HTTPD=true ;;
+    esac
+fi
+
+if [ "$HAS_HTTPD" = false ]; then
+    printf '致命错误: Busybox httpd 不可用\n' >&2
+    printf '  → Web UI 需要 Busybox httpd 支持\n' >&2
+    printf '  → 请安装包含 httpd 的 Busybox\n' >&2
+    exit 1
+fi
 
 # 4. 角色分发 (单文件多态架构)
 case "$1" in
@@ -37,11 +54,17 @@ esac
 _WEBUI_PID=$$
 WEBUI_TMP_DIR="${MODDIR}/.webui_tmp"
 WEBROOT="${WEBUI_TMP_DIR}/webroot_${_WEBUI_PID}"
-LAST_ACCESS_FILE="${WEBUI_TMP_DIR}/access_${_WEBUI_PID}"
+# 访问文件路径：lib 模式下优先使用主进程 PID
+if [ "$MODE" = "lib" ] && [ -n "$WEBUI_MAIN_PID" ]; then
+    LAST_ACCESS_FILE="${WEBUI_TMP_DIR}/access_${WEBUI_MAIN_PID}"
+else
+    LAST_ACCESS_FILE="${WEBUI_TMP_DIR}/access_${_WEBUI_PID}"
+fi
 LOCK_DIR="${MODDIR}/.config_lock"
-# WebUI 专用配置（可通过 API 修改）
-WEBUI_TIMEOUT="${WEBUI_TIMEOUT:-300}"   # 默认 5 分钟无操作自动退出
-HEARTBEAT_SEC="${HEARTBEAT_SEC:-30}"    # 心跳检测间隔（防止 Doze 僵死）
+# WebUI 默认 5 分钟无操作自动退出
+WEBUI_TIMEOUT="${WEBUI_TIMEOUT:-300}"
+# 心跳检测间隔（防止 Doze 僵死）
+HEARTBEAT_SEC="${HEARTBEAT_SEC:-30}"
 
 # 兼容性: 确保 TIMEOUT_SEC 使用 WEBUI_TIMEOUT
 TIMEOUT_SEC="$WEBUI_TIMEOUT"
@@ -221,7 +244,7 @@ acquire_config_lock() {
         # 5. 精确匹配进程名
         _acl_cmd=$(read_cmdline "/proc/$_acl_pid/cmdline")
         case "$_acl_cmd" in
-            *"/webui.sh"*|*"webui.sh"*)
+            *"$MODDIR/webui.sh"*)
                 # 确实是 webui.sh 在运行，锁有效
                 return 1
                 ;;
@@ -312,8 +335,12 @@ set_config_atomic_fast() {
     _scaf_sed=""
     if command -v sed >/dev/null 2>&1; then
         _scaf_sed="sed"
-    elif [ -n "$BB_PATH" ] && "$BB_PATH" --list 2>/dev/null | grep -q "^sed$"; then
-        _scaf_sed="$BB_PATH sed"
+    elif [ -n "$BB_PATH" ]; then
+        # 使用 echo 将换行符转为空格,确保 case 匹配正确
+        _scaf_bb_list=" $(echo $("$BB_PATH" --list 2>/dev/null)) "
+        case "$_scaf_bb_list" in
+            *" sed "*) _scaf_sed="$BB_PATH sed" ;;
+        esac
     fi
     
     # 尝试使用 sed 实现
@@ -350,7 +377,15 @@ set_config_atomic_fast() {
 }
 
 # 1.6 访问时间更新
-touch_access() { date +%s > "$LAST_ACCESS_FILE" 2>/dev/null; }
+touch_access() {
+    if date +%s > "$LAST_ACCESS_FILE" 2>/dev/null; then
+        [ "$LOG_MODE" = "DEBUG" ] && webui_log "更新访问时间戳: $LAST_ACCESS_FILE"
+        return 0
+    else
+        webui_warn "无法更新访问时间戳: $LAST_ACCESS_FILE"
+        return 1
+    fi
+}
 
 # 1.7 操作日志记录 (写入 service.log，与 action.sh 保持统一)
 webui_log() {
@@ -554,9 +589,21 @@ if [ "$MODE" = "lib" ]; then
                     _acs_saved="$_acs_saved, heartbeat_sec=$_acs_hb"
                 fi
             fi
+            
+            # 计算新的下次运行时间（使用共享函数）
+            _acs_next_run=$(get_next_run_time 2>/dev/null)
+            [ -z "$_acs_next_run" ] && _acs_next_run=0
+            
+            # 获取配置文件修改时间
+            _acs_config_mtime=0
+            if command -v stat >/dev/null 2>&1; then
+                _acs_config_mtime=$(stat -c%Y "$MODDIR/service.sh" 2>/dev/null)
+                case "$_acs_config_mtime" in *[!0-9]*) _acs_config_mtime=0 ;; esac
+            fi
+            
             webui_log "配置已保存: $_acs_saved"
-            printf '{"success":true,"message":"配置已保存","saved":{"schedule_mode":"%s","cron_exp":"%s","log_mode":"%s"}}' \
-                "$_acs_s" "$_acs_c" "$_acs_l"
+            printf '{"success":true,"message":"配置已保存","saved":{"schedule_mode":"%s","cron_exp":"%s","log_mode":"%s"},"next_run_ts":%d,"config_mtime":%d,"pending_changes":true}' \
+                "$_acs_s" "$_acs_c" "$_acs_l" "$_acs_next_run" "$_acs_config_mtime"
         else
             webui_log "配置保存失败"
             printf '{"success":false,"message":"保存失败"}'
@@ -579,6 +626,11 @@ if [ "$MODE" = "lib" ]; then
         _afcg_esg=$(get_config_value "$MODDIR/f2fsopt" "ENABLE_SMART_GC")
         _afcg_est=$(get_config_value "$MODDIR/f2fsopt" "ENABLE_SMART_TRIM")
         _afcg_etg=$(get_config_value "$MODDIR/f2fsopt" "ENABLE_TURBO_GC")
+        _afcg_en=$(get_config_value "$MODDIR/f2fsopt" "ENABLE_NOTIFICATIONS")
+        # 扫描诊断配置
+        _afcg_ds=$(get_config_value "$MODDIR/f2fsopt" "DEBUG_SCAN")
+        _afcg_smt=$(get_config_value "$MODDIR/f2fsopt" "SLOW_MOUNT_THRESHOLD")
+        _afcg_vst=$(get_config_value "$MODDIR/f2fsopt" "VERY_SLOW_THRESHOLD")
         # 默认值处理
         [ -z "$_afcg_gd" ] && _afcg_gd="200"
         [ -z "$_afcg_gt" ] && _afcg_gt="50"
@@ -592,6 +644,10 @@ if [ "$MODE" = "lib" ]; then
         [ -z "$_afcg_esg" ] && _afcg_esg="true"
         [ -z "$_afcg_est" ] && _afcg_est="true"
         [ -z "$_afcg_etg" ] && _afcg_etg="true"
+        [ -z "$_afcg_en" ] && _afcg_en="true"
+        [ -z "$_afcg_ds" ] && _afcg_ds="1"
+        [ -z "$_afcg_smt" ] && _afcg_smt="1000"
+        [ -z "$_afcg_vst" ] && _afcg_vst="1500"
         # JSON 转义
         _afcg_gd=$(json_escape "$_afcg_gd"); _afcg_gt=$(json_escape "$_afcg_gt")
         _afcg_gs=$(json_escape "$_afcg_gs"); _afcg_gm=$(json_escape "$_afcg_gm")
@@ -599,8 +655,11 @@ if [ "$MODE" = "lib" ]; then
         _afcg_oc=$(json_escape "$_afcg_oc"); _afcg_sc=$(json_escape "$_afcg_sc")
         _afcg_gp=$(json_escape "$_afcg_gp"); _afcg_esg=$(json_escape "$_afcg_esg")
         _afcg_est=$(json_escape "$_afcg_est"); _afcg_etg=$(json_escape "$_afcg_etg")
-        printf '{"gc_dirty_min":"%s","gc_turbo_sleep":"%s","gc_safe_sleep":"%s","gc_max_sec":"%s","trim_timeout":"%s","stop_on_screen":"%s","only_charging":"%s","gc_stable_cnt":"%s","gc_poll":"%s","enable_smart_gc":"%s","enable_smart_trim":"%s","enable_turbo_gc":"%s"}' \
-            "$_afcg_gd" "$_afcg_gt" "$_afcg_gs" "$_afcg_gm" "$_afcg_tt" "$_afcg_ss" "$_afcg_oc" "$_afcg_sc" "$_afcg_gp" "$_afcg_esg" "$_afcg_est" "$_afcg_etg"
+        _afcg_en=$(json_escape "$_afcg_en")
+        _afcg_ds=$(json_escape "$_afcg_ds"); _afcg_smt=$(json_escape "$_afcg_smt")
+        _afcg_vst=$(json_escape "$_afcg_vst")
+        printf '{"gc_dirty_min":"%s","gc_turbo_sleep":"%s","gc_safe_sleep":"%s","gc_max_sec":"%s","trim_timeout":"%s","stop_on_screen":"%s","only_charging":"%s","gc_stable_cnt":"%s","gc_poll":"%s","enable_smart_gc":"%s","enable_smart_trim":"%s","enable_turbo_gc":"%s","enable_notifications":"%s","debug_scan":"%s","slow_mount_threshold":"%s","very_slow_threshold":"%s"}' \
+            "$_afcg_gd" "$_afcg_gt" "$_afcg_gs" "$_afcg_gm" "$_afcg_tt" "$_afcg_ss" "$_afcg_oc" "$_afcg_sc" "$_afcg_gp" "$_afcg_esg" "$_afcg_est" "$_afcg_etg" "$_afcg_en" "$_afcg_ds" "$_afcg_smt" "$_afcg_vst"
     }
 
     # 2.4 API: 保存 f2fsopt 配置
@@ -619,6 +678,11 @@ if [ "$MODE" = "lib" ]; then
         _afcs_t="${_afcs_post#*\"enable_smart_gc\":\"}"; [ "$_afcs_t" != "$_afcs_post" ] && _afcs_esg="${_afcs_t%%\"*}" || _afcs_esg=""
         _afcs_t="${_afcs_post#*\"enable_smart_trim\":\"}"; [ "$_afcs_t" != "$_afcs_post" ] && _afcs_est="${_afcs_t%%\"*}" || _afcs_est=""
         _afcs_t="${_afcs_post#*\"enable_turbo_gc\":\"}"; [ "$_afcs_t" != "$_afcs_post" ] && _afcs_etg="${_afcs_t%%\"*}" || _afcs_etg=""
+        _afcs_t="${_afcs_post#*\"enable_notifications\":\"}"; [ "$_afcs_t" != "$_afcs_post" ] && _afcs_en="${_afcs_t%%\"*}" || _afcs_en=""
+        # 扫描诊断配置解析
+        _afcs_t="${_afcs_post#*\"debug_scan\":\"}"; [ "$_afcs_t" != "$_afcs_post" ] && _afcs_ds="${_afcs_t%%\"*}" || _afcs_ds=""
+        _afcs_t="${_afcs_post#*\"slow_mount_threshold\":\"}"; [ "$_afcs_t" != "$_afcs_post" ] && _afcs_smt="${_afcs_t%%\"*}" || _afcs_smt=""
+        _afcs_t="${_afcs_post#*\"very_slow_threshold\":\"}"; [ "$_afcs_t" != "$_afcs_post" ] && _afcs_vst="${_afcs_t%%\"*}" || _afcs_vst=""
         printf 'Content-Type: application/json\r\n\r\n'
         _afcs_ok=true
         _afcs_err=""
@@ -715,6 +779,42 @@ if [ "$MODE" = "lib" ]; then
                 set_config_atomic_fast "$MODDIR/f2fsopt" "ENABLE_TURBO_GC" "$_afcs_etg" || _afcs_ok=false
             else
                 _afcs_ok=false; _afcs_err="enable_turbo_gc 必须为 true 或 false"
+            fi
+        fi
+        if [ -n "$_afcs_en" ]; then
+            if _afcs_is_bool "$_afcs_en"; then
+                set_config_atomic_fast "$MODDIR/f2fsopt" "ENABLE_NOTIFICATIONS" "$_afcs_en" || _afcs_ok=false
+            else
+                _afcs_ok=false; _afcs_err="enable_notifications 必须为 true 或 false"
+            fi
+        fi
+        # 扫描诊断配置写入
+        if [ -n "$_afcs_ds" ]; then
+            case "$_afcs_ds" in
+                0|1) set_config_atomic_fast "$MODDIR/f2fsopt" "DEBUG_SCAN" "$_afcs_ds" || _afcs_ok=false ;;
+                *) _afcs_ok=false; _afcs_err="debug_scan 必须为 0 或 1" ;;
+            esac
+        fi
+        if [ -n "$_afcs_smt" ]; then
+            if _afcs_in_range "$_afcs_smt" 100 10000; then
+                set_config_atomic_fast "$MODDIR/f2fsopt" "SLOW_MOUNT_THRESHOLD" "$_afcs_smt" || _afcs_ok=false
+            else
+                _afcs_ok=false; _afcs_err="slow_mount_threshold 必须为 100-10000 之间的数字"
+            fi
+        fi
+        if [ -n "$_afcs_vst" ]; then
+            if _afcs_in_range "$_afcs_vst" 100 30000; then
+                # 跨字段验证：VERY_SLOW >= SLOW
+                _afcs_smt_check="$_afcs_smt"
+                [ -z "$_afcs_smt_check" ] && _afcs_smt_check=$(get_config_value "$MODDIR/f2fsopt" "SLOW_MOUNT_THRESHOLD")
+                [ -z "$_afcs_smt_check" ] && _afcs_smt_check="1000"
+                if [ "$_afcs_vst" -lt "$_afcs_smt_check" ] 2>/dev/null; then
+                    _afcs_ok=false; _afcs_err="very_slow_threshold 必须大于等于 slow_mount_threshold"
+                else
+                    set_config_atomic_fast "$MODDIR/f2fsopt" "VERY_SLOW_THRESHOLD" "$_afcs_vst" || _afcs_ok=false
+                fi
+            else
+                _afcs_ok=false; _afcs_err="very_slow_threshold 必须为 100-30000 之间的数字"
             fi
         fi
         chmod 755 "$MODDIR/f2fsopt" 2>/dev/null
@@ -826,12 +926,14 @@ if [ "$MODE" = "lib" ]; then
         touch_access
         printf 'Content-Type: application/json\r\n\r\n'
         _as_st="已停止"; _as_lr="从未运行"; _as_ls="0 KB"
+        _as_last_run_ts=0; _as_next_run_ts=0; _as_config_mtime=0; _as_pending="false"
+        
+        # 检查服务状态
         if [ -f "$MODDIR/service.pid" ]; then
             read -r _as_pid < "$MODDIR/service.pid" 2>/dev/null
             # 验证进程存在且为服务相关进程
             if [ -n "$_as_pid" ] && is_integer "$_as_pid" && [ -d "/proc/$_as_pid" ]; then
-                # 修复: 使用 read_cmdline 函数转换 NULL 字节为空格
-                # /proc/PID/cmdline 使用 NULL 字节分隔参数，需要转换为空格才能正确匹配
+                # 使用 read_cmdline 函数转换 NULL 字节为空格
                 _as_cmd=$(read_cmdline "/proc/$_as_pid/cmdline")
                 
                 # 策略 1: 匹配 cmdline（最准确）
@@ -870,15 +972,36 @@ if [ "$MODE" = "lib" ]; then
                 fi
             fi
         fi
+        
+        # 读取最后执行时间
         if [ -f "$MODDIR/scheduler.state" ]; then
-            read -r _as_ts < "$MODDIR/scheduler.state" 2>/dev/null
-            [ "$_as_ts" -gt 0 ] 2>/dev/null && _as_lr=$("$BB_PATH" date -d "@$_as_ts" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || "$BB_PATH" date '+%Y-%m-%d %H:%M:%S')
+            read -r _as_last_run_ts < "$MODDIR/scheduler.state" 2>/dev/null
+            case "$_as_last_run_ts" in *[!0-9]*) _as_last_run_ts=0 ;; esac
+            [ "$_as_last_run_ts" -gt 0 ] 2>/dev/null && _as_lr=$("$BB_PATH" date -d "@$_as_last_run_ts" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || "$BB_PATH" date '+%Y-%m-%d %H:%M:%S')
         fi
+        
+        # 计算下次运行时间（使用共享函数）
+        _as_next_run_ts=$(get_next_run_time 2>/dev/null)
+        [ -z "$_as_next_run_ts" ] && _as_next_run_ts=0
+        
+        # 获取配置文件修改时间
+        if command -v stat >/dev/null 2>&1; then
+            _as_config_mtime=$(stat -c%Y "$MODDIR/service.sh" 2>/dev/null)
+            case "$_as_config_mtime" in *[!0-9]*) _as_config_mtime=0 ;; esac
+        fi
+        
+        # 检测待生效的配置变更
+        [ "$_as_config_mtime" -gt "$_as_last_run_ts" ] 2>/dev/null && _as_pending="true"
+        
+        # 读取日志大小
         if [ -f "$LOG_FILE" ]; then
             _as_sz=$("$BB_PATH" stat -c %s "$LOG_FILE" 2>/dev/null) || _as_sz=0
             [ "$_as_sz" -gt 0 ] 2>/dev/null && _as_ls="$((_as_sz / 1024)) KB"
         fi
-        printf '{"service_status":"%s","last_run":"%s","log_size":"%s"}' "$_as_st" "$_as_lr" "$_as_ls"
+        
+        # 返回状态（包含新增字段）
+        printf '{"service_status":"%s","last_run":"%s","last_run_ts":%d,"next_run_ts":%d,"config_mtime":%d,"pending_changes":%s,"log_size":"%s"}' \
+            "$_as_st" "$_as_lr" "$_as_last_run_ts" "$_as_next_run_ts" "$_as_config_mtime" "$_as_pending" "$_as_ls"
     }
 
     # 2.6 API: 获取日志
@@ -906,7 +1029,8 @@ if [ "$MODE" = "lib" ]; then
             restart)
                 # 仅重启调度服务 (service.sh)，不执行优化任务
                 webui_log "服务重启请求"
-                "$BB_PATH" pkill -f "service.sh --daemon" 2>/dev/null
+                # 使用精确路径匹配，防止误杀其他模块
+                "$BB_PATH" pkill -f "$MODDIR/service.sh --daemon" 2>/dev/null
                 sleep 1
                 /system/bin/sh "$MODDIR/service.sh" >/dev/null 2>&1 &
                 
@@ -1002,78 +1126,6 @@ if [ "$MODE" = "lib" ]; then
         esac
     }
 
-    # 2.8 API: 计算下次执行时间 (辅助函数)
-    calculate_next_run_time() {
-        # 读取调度配置
-        _cnrt_mode=$(get_config_value "$MODDIR/service.sh" "SCHEDULE_MODE")
-        _cnrt_cron=$(get_config_value "$MODDIR/service.sh" "CRON_EXP")
-        _cnrt_heartbeat=$(get_config_value "$MODDIR/service.sh" "SLEEP_HEARTBEAT")
-        
-        # 默认值
-        [ -z "$_cnrt_mode" ] && _cnrt_mode="sleep"
-        [ -z "$_cnrt_cron" ] && _cnrt_cron="0 */4 * * *"
-        [ -z "$_cnrt_heartbeat" ] && _cnrt_heartbeat="1800"
-        
-        # 读取最后执行时间
-        _cnrt_last_run=0
-        if [ -f "$MODDIR/scheduler.state" ]; then
-            read -r _cnrt_last_run < "$MODDIR/scheduler.state" 2>/dev/null
-            case "$_cnrt_last_run" in *[!0-9]*) _cnrt_last_run=0 ;; esac
-        fi
-        
-        # 获取当前时间
-        _cnrt_now=$(date +%s 2>/dev/null)
-        [ -z "$_cnrt_now" ] && _cnrt_now=0
-        
-        # 如果从未运行，返回当前时间（表示应该立即运行）
-        if [ "$_cnrt_last_run" -eq 0 ]; then
-            printf '%d' "$_cnrt_now"
-            return 0
-        fi
-        
-        # 解析 CRON 表达式
-        set -f; set -- $_cnrt_cron; set +f
-        _cnrt_min="$1"; _cnrt_hour="$2"
-        
-        # 类型 A: 固定时间 (M H * * *)
-        if is_integer "$_cnrt_min" && is_integer "$_cnrt_hour"; then
-            # 计算今天的目标时间
-            _cnrt_today_start=$((_cnrt_now - (_cnrt_now % 86400)))
-            _cnrt_target=$((_cnrt_today_start + _cnrt_hour * 3600 + _cnrt_min * 60))
-            
-            # 如果今天的时间已过，返回明天的时间
-            if [ "$_cnrt_target" -le "$_cnrt_now" ]; then
-                printf '%d' "$((_cnrt_target + 86400))"
-            else
-                printf '%d' "$_cnrt_target"
-            fi
-            return 0
-        fi
-        
-        # 类型 B: 分钟间隔 (*/N * * * *)
-        case "$_cnrt_min" in \*/[0-9]*)
-            _cnrt_step="${_cnrt_min#*/}"
-            if is_integer "$_cnrt_step" && [ "$_cnrt_step" -gt 0 ] 2>/dev/null; then
-                _cnrt_interval=$((_cnrt_step * 60))
-                printf '%d' "$((_cnrt_last_run + _cnrt_interval))"
-                return 0
-            fi
-        ;; esac
-        
-        # 类型 C: 小时间隔 (0 */N * * *)
-        case "$_cnrt_hour" in \*/[0-9]*)
-            _cnrt_step="${_cnrt_hour#*/}"
-            if is_integer "$_cnrt_step" && [ "$_cnrt_step" -gt 0 ] 2>/dev/null; then
-                _cnrt_interval=$((_cnrt_step * 3600))
-                printf '%d' "$((_cnrt_last_run + _cnrt_interval))"
-                return 0
-            fi
-        ;; esac
-        
-        # 默认：使用心跳间隔
-        printf '%d' "$((_cnrt_last_run + _cnrt_heartbeat))"
-        return 0
-    }
     
     # 2.9 API: 检测待生效的配置项 (辅助函数)
     detect_pending_changes() {
@@ -1440,7 +1492,18 @@ fi
 if [ "$MODE" = "daemon" ]; then
     _dm_httpd_pid="$2"
     _dm_launcher_pid="$3"
+    _dm_main_pid="$4"
     _dm_wait_sec="$TIMEOUT_SEC"
+    
+    # 验证并使用主进程 PID 构造访问文件路径
+    if [ -n "$_dm_main_pid" ] && is_integer "$_dm_main_pid"; then
+        LAST_ACCESS_FILE="${WEBUI_TMP_DIR}/access_${_dm_main_pid}"
+        webui_log "守护进程监控访问文件: $LAST_ACCESS_FILE [主进程 PID: $_dm_main_pid]"
+    else
+        webui_warn "守护进程未接收到有效的主进程 PID，回退到自身 PID"
+        LAST_ACCESS_FILE="${WEBUI_TMP_DIR}/access_${_WEBUI_PID}"
+        webui_log "守护进程监控访问文件: $LAST_ACCESS_FILE [守护进程 PID: $_WEBUI_PID]"
+    fi
     
     # 守护进程清理函数
     _dm_cleanup() {
@@ -1483,14 +1546,28 @@ if [ "$MODE" = "daemon" ]; then
         # 超时检测
         if [ -f "$LAST_ACCESS_FILE" ]; then
             read -r _dm_last_ts < "$LAST_ACCESS_FILE" 2>/dev/null
+            
+            # 验证时间戳有效性
+            if [ -z "$_dm_last_ts" ] || ! is_integer "$_dm_last_ts"; then
+                webui_warn "访问时间戳无效，重新初始化: $LAST_ACCESS_FILE"
+                date +%s > "$LAST_ACCESS_FILE" 2>/dev/null
+                continue
+            fi
+            
             _dm_curr_ts=$(date +%s 2>/dev/null) || _dm_curr_ts=0
             if [ "$_dm_last_ts" -gt 0 ] 2>/dev/null && [ "$_dm_curr_ts" -gt 0 ] 2>/dev/null; then
                 _dm_diff=$((_dm_curr_ts - _dm_last_ts))
-                # 时间回拨保护
-                [ "$_dm_diff" -lt 0 ] 2>/dev/null && { date +%s > "$LAST_ACCESS_FILE" 2>/dev/null; continue; }
                 
+                # 时间回拨保护
+                if [ "$_dm_diff" -lt 0 ] 2>/dev/null; then
+                    webui_warn "检测到时间回拨 (当前: $_dm_curr_ts, 最后访问: $_dm_last_ts)，重置访问时间戳"
+                    date +%s > "$LAST_ACCESS_FILE" 2>/dev/null
+                    continue
+                fi
+                
+                # 超时判断
                 if [ "$_dm_diff" -gt "$TIMEOUT_SEC" ] 2>/dev/null; then
-                    webui_log "$(printf '%d 分钟无操作，自动退出' "$((TIMEOUT_SEC / 60))")"
+                    webui_log "$(printf '%d 分钟无操作，自动退出 (空闲时长: %d 秒)' "$((TIMEOUT_SEC / 60))" "$_dm_diff")"
                     printf '\n%d 分钟无操作，自动退出\n' "$((TIMEOUT_SEC / 60))"
                     
                     # 通知主进程退出
@@ -1501,7 +1578,14 @@ if [ "$MODE" = "daemon" ]; then
                 
                 # 更新剩余等待时间
                 _dm_wait_sec=$(($TIMEOUT_SEC - _dm_diff))
+                
+                # 调试日志（仅在 DEBUG 模式）
+                [ "$LOG_MODE" = "DEBUG" ] && webui_log "超时检测: 空闲 $_dm_diff 秒 / $TIMEOUT_SEC 秒"
             fi
+        else
+            # 访问文件不存在，创建并初始化
+            webui_warn "访问文件不存在，创建: $LAST_ACCESS_FILE"
+            date +%s > "$LAST_ACCESS_FILE" 2>/dev/null
         fi
     done
 fi
@@ -1594,6 +1678,7 @@ MODDIR="${MODDIR}"
 BB_PATH="${BB_PATH}"
 LOG_FILE="${LOG_FILE}"
 LOG_MODE="${LOG_MODE}"
+WEBUI_MAIN_PID="${_WEBUI_PID}"
 . "\$MODDIR/webui.sh" --lib-mode
 CGISHIM
 chmod 755 "$WEBROOT/cgi-bin/api.sh"
@@ -1624,8 +1709,8 @@ HTTPD_PID=$!
 # 保存端口信息到文件（供 action.sh 读取）
 printf '%s\n' "$PORT" > "$MODDIR/webui.port" 2>/dev/null
 
-# 启动守护进程 (统一使用 _WEBUI_PID)
-/system/bin/sh "$0" --daemon-mode "$HTTPD_PID" "$_WEBUI_PID" >/dev/null 2>&1 &
+# 启动守护进程 (传递主进程 PID 用于访问文件路径构造)
+/system/bin/sh "$0" --daemon-mode "$HTTPD_PID" "$_WEBUI_PID" "$_WEBUI_PID" >/dev/null 2>&1 &
 DAEMON_PID=$!
 
 # 打开浏览器

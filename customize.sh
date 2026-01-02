@@ -451,14 +451,28 @@ check_dependencies() {
         _cd_missing_optional=$((_cd_missing_optional + 1))
     fi
     
-    # Busybox检测
+    # Busybox检测 (使用统一路径列表)
+    # SYNC: 与 service.sh 和 f2fsopt 保持一致
     _cd_bb_path=""
-    for _cd_p in "/data/adb/magisk/busybox" "/data/adb/ksu/bin/busybox" "/data/adb/ap/bin/busybox" "/sbin/.magisk/busybox" "/system/xbin/busybox" "/system/bin/busybox" "$(command -v busybox)"; do
+    for _cd_p in \
+        "/data/adb/magisk/busybox" \
+        "/data/adb/ksu/bin/busybox" \
+        "/data/adb/ap/bin/busybox" \
+        "/system/bin/busybox"; do
+        
         if [ -x "$_cd_p" ]; then
             _cd_bb_path="$_cd_p"
             break
         fi
     done
+    
+    # 动态回退
+    if [ -z "$_cd_bb_path" ]; then
+        _cd_p=$(command -v busybox 2>/dev/null)
+        if [ -n "$_cd_p" ] && [ -x "$_cd_p" ]; then
+            _cd_bb_path="$_cd_p"
+        fi
+    fi
     
     if [ -n "$_cd_bb_path" ]; then
         _cd_bb_ver=$("$_cd_bb_path" 2>&1 | head -n 1 2>/dev/null)
@@ -466,14 +480,20 @@ check_dependencies() {
         ui_print "      ${_cd_bb_ver}"
         
         # 检测 Busybox httpd 支持（WebUI 功能）
-        if "$_cd_bb_path" --list 2>/dev/null | grep -q '^httpd$'; then
-            ui_print "      ├─ httpd: 支持 ✅ (WebUI 可用)"
-        else
-            ui_print "      ├─ httpd: 不支持 ⚠️ (WebUI 不可用)"
-            _cd_missing_optional=$((_cd_missing_optional + 1))
-        fi
+        # 使用 echo 将换行符转为空格,确保 case 匹配正确
+        _cd_bb_list=" $(echo $("$_cd_bb_path" --list 2>/dev/null)) "
+        case "$_cd_bb_list" in
+            *" httpd "*)
+                ui_print "      ├─ httpd: 支持 ✅ (WebUI 可用)"
+                ;;
+            *)
+                ui_print "      ├─ httpd: 不支持 ⚠️ (WebUI 不可用)"
+                _cd_missing_optional=$((_cd_missing_optional + 1))
+                ;;
+        esac
     else
         ui_print "  ⚠️ Busybox: 未找到（使用系统命令）"
+        ui_print "      ├─ 部分功能可能受限 (Cron 模式, Web UI)"
         ui_print "      └─ WebUI 功能不可用"
         _cd_missing_optional=$((_cd_missing_optional + 1))
     fi
@@ -1001,7 +1021,7 @@ pre_install_check() {
         _pic_fail_count=$((_pic_fail_count + 1))
     fi
     
-    # 验证计数器单调性（调试用，生产环境可移除）
+    # 验证计数器单调性（调试用）
     # 确保计数器只增不减
     if [ "$_pic_fail_count" -lt 0 ] 2>/dev/null || [ "$_pic_warn_count" -lt 0 ] 2>/dev/null; then
         ui_print "  ⚠️ 内部错误: 计数器异常"
@@ -1060,6 +1080,10 @@ fi
 
 ui_print ""
 # ui_print "✅ 兼容性检测通过，继续安装..."
+ui_print ""
+
+# 注意：配置迁移已移至 update-binary，此处无需执行
+
 ui_print ""
 
 # 您可以添加更多功能来协助您的自定义脚本代码

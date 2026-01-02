@@ -26,7 +26,7 @@ fi
 
 # 3. 调用共享初始化函数
 init_moddir "$0" || { printf '❌ 致命: 无法初始化模块目录\n' >&2; exit 1; }
-init_busybox || { printf '❌ 致命: 找不到 Busybox\n' >&2; exit 1; }
+init_busybox  # 失败时仅记录警告,不强制退出
 
 # 常量定义
 F2FSOPT_LOCK_DIR="/data/local/tmp/f2fsopt.lock.d"
@@ -48,7 +48,7 @@ F2FSOPT_PID_FILE="$F2FSOPT_LOCK_DIR/pid"
 #   AUTO_START_WEBUI="false"  # 从不启动
 #   AUTO_START_WEBUI="ask"    # 每次询问（默认）
 # 注意: 移除 readonly 以支持 Web UI 动态修改
-AUTO_START_WEBUI="true"
+AUTO_START_WEBUI="ask"
 
 # 音量键选择超时时间（秒）
 # 说明: 当 AUTO_START_WEBUI="ask" 时，等待用户按键的最长时间
@@ -187,7 +187,7 @@ wait_for_key_event() {
         log_msg "[音量键] 未捕获到事件 (退出码: $_wfke_ret)"
     fi
     
-    # 解析结果 - 参考 参考.sh 的简单匹配
+    # 解析结果
     case "$_wfke_key_event" in
         *"KEY_VOLUMEUP"*|*"0073"*)
             log_msg "[音量键] 检测到音量+"
@@ -318,9 +318,15 @@ if [ "$_APPLY_CONFIG_MODE" = true ]; then
         rm -f "$SVC_PID_FILE"
     fi
     
-    # 3.2 深度清理 (合并为单次调用，使用 OR 模式)
+    # 3.2 深度清理
     if command -v pgrep >/dev/null 2>&1; then
-        for _act_clean_pid in $(pgrep -f "crond -c $MODDIR/cron.d\|$MODDIR/service.sh" 2>/dev/null); do
+        # 清理 Cron (精确匹配模块路径)
+        for _act_clean_pid in $(pgrep -f "crond -c $MODDIR/cron.d" 2>/dev/null); do
+            [ "$_act_clean_pid" != "$$" ] && kill "$_act_clean_pid" 2>/dev/null
+        done
+        
+        # 清理主服务 (包含模块路径)
+        for _act_clean_pid in $(pgrep -f "$MODDIR/service.sh" 2>/dev/null); do
             [ "$_act_clean_pid" != "$$" ] && kill "$_act_clean_pid" 2>/dev/null
         done
     else
@@ -369,14 +375,25 @@ else
     # 3.3 深度清理残留进程
     ui_print "深度清理残留进程..."
     if command -v pgrep >/dev/null 2>&1; then
-        for _act_clean_pid in $(pgrep -f "crond -c $MODDIR/cron.d\|$MODDIR/service.sh\|f2fsopt" 2>/dev/null); do
+        # 清理 Cron (精确匹配模块路径)
+        for _act_clean_pid in $(pgrep -f "crond -c $MODDIR/cron.d" 2>/dev/null); do
+            [ "$_act_clean_pid" != "$$" ] && kill "$_act_clean_pid" 2>/dev/null
+        done
+        
+        # 清理主服务 (包含模块路径)
+        for _act_clean_pid in $(pgrep -f "$MODDIR/service.sh" 2>/dev/null); do
+            [ "$_act_clean_pid" != "$$" ] && kill "$_act_clean_pid" 2>/dev/null
+        done
+        
+        # 清理 f2fsopt 二进制 (精确匹配)
+        for _act_clean_pid in $(pgrep -f "$MODDIR/f2fsopt" 2>/dev/null); do
             [ "$_act_clean_pid" != "$$" ] && kill "$_act_clean_pid" 2>/dev/null
         done
     else
         # 回退: 使用 kill_by_pattern (仅当 pgrep 不可用)
         kill_by_pattern "crond -c $MODDIR/cron.d"
         kill_by_pattern "$MODDIR/service.sh"
-        kill_by_pattern "f2fsopt"
+        kill_by_pattern "$MODDIR/f2fsopt"
     fi
     
     # 清理锁
