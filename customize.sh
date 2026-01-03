@@ -4,6 +4,13 @@
 #
 ##########################################################################################
 
+##########################################################################################
+# 完全控制安装流程
+##########################################################################################
+
+# 声明 SKIPUNZIP=1 跳过默认安装步骤
+# 手动处理所有安装过程：解压、配置迁移、权限设置
+SKIPUNZIP=1
 
 ##########################################################################################
 # 替换列表
@@ -118,7 +125,7 @@ get_config_value() {
 
 # 验证 f2fsopt 文件完整性
 verify_f2fsopt_integrity() {
-    _vfi_file="$MODPATH/f2fsopt"
+    _vfi_file="$1"  # 接受文件路径作为参数
     _vfi_size=0
     
     # 检查文件存在
@@ -710,77 +717,17 @@ check_kernel_support_advanced() {
     return 0
 }
 
-# Layer 5: 静态文件完整性检测
-check_static_files() {
-    ui_print ""
-    ui_print "▶ Layer 5: 静态文件完整性检测"
-    
-    _csf_passed=true
-    _csf_missing_count=0
-    
-    # 关键文件列表
-    _csf_critical_files="f2fsopt service.sh action.sh webui.sh webui/index.html"
-    
-    ui_print "  检查关键文件:"
-    for _csf_file in $_csf_critical_files; do
-        if [ -f "$MODPATH/$_csf_file" ]; then
-            ui_print "    ✅ $_csf_file"
-        else
-            ui_print "    ❌ $_csf_file (缺失)"
-            _csf_passed=false
-            _csf_missing_count=$((_csf_missing_count + 1))
-        fi
-    done
-    
-    if [ "$_csf_missing_count" -gt 0 ]; then
-        ui_print "  ❌ 缺失 $_csf_missing_count 个关键文件"
-        return 1
-    fi
-    
-    # 验证 f2fsopt 文件完整性
-    verify_f2fsopt_integrity
-    _csf_vfi_ret=$?
-    if [ "$_csf_vfi_ret" -eq 0 ]; then
-        _csf_f2fsopt_size=$(stat -c%s "$MODPATH/f2fsopt" 2>/dev/null) || _csf_f2fsopt_size=0
-        ui_print "  ✅ f2fsopt 文件完整 ($((_csf_f2fsopt_size / 1024)) KB)"
-    else
-        ui_print "  ❌ f2fsopt 文件检查失败"
-        case "$_csf_vfi_ret" in
-            1) ui_print "      └─ 文件不存在" ;;
-            2) 
-                _csf_f2fsopt_size=$(stat -c%s "$MODPATH/f2fsopt" 2>/dev/null) || _csf_f2fsopt_size=0
-                ui_print "      └─ 文件大小不足: $_csf_f2fsopt_size 字节 (需要至少 10240 字节)"
-                ;;
-            3) ui_print "      └─ 缺少关键函数 (process_target/cleanup/acquire_lock)" ;;
-            *) ui_print "      └─ 未知错误" ;;
-        esac
-        _csf_passed=false
-    fi
-    
-    # 验证 HTML 文件完整性
-    if [ -f "$MODPATH/webui/index.html" ]; then
-        _csf_html_size=$(stat -c%s "$MODPATH/webui/index.html" 2>/dev/null) || _csf_html_size=0
-        if [ "$_csf_html_size" -gt 10000 ] 2>/dev/null; then
-            ui_print "  ✅ HTML 文件完整 ($((_csf_html_size / 1024)) KB)"
-        else
-            ui_print "  ⚠️ HTML 文件可能不完整 ($_csf_html_size 字节)"
-            _csf_passed=false
-        fi
-    fi
-    
-    $_csf_passed
-}
-
-# Layer 6: 配置语法检测
+# 配置语法检测（在暂存目录中验证）
 check_service_config() {
-    ui_print ""
-    ui_print "▶ Layer 6: 配置语法检测"
+    _csc_dir="${1:-$STAGING_DIR}"  # 接受目录参数，默认为 STAGING_DIR
+    
+    ui_print "- 验证配置语法..."
     
     _csc_passed=true
-    _csc_service_file="$MODPATH/service.sh"
+    _csc_service_file="$_csc_dir/service.sh"
     
     if [ ! -f "$_csc_service_file" ]; then
-        ui_print "  ❌ service.sh 文件不存在"
+        ui_print "  ! service.sh 文件不存在"
         return 1
     fi
     
@@ -791,31 +738,33 @@ check_service_config() {
     # 检测 SCHEDULE_MODE
     case "$_csc_schedule_mode" in
         "sleep"|"cron")
-            ui_print "  ✅ 调度模式: $_csc_schedule_mode"
+            # 配置正确，静默通过
             ;;
         "")
-            ui_print "  ❌ 调度模式: 未配置"
-            ui_print "     → 请设置 SCHEDULE_MODE=\"sleep\" 或 \"cron\""
+            ui_print "  ! 调度模式未配置"
+            ui_print "    → 请设置 SCHEDULE_MODE=\"sleep\" 或 \"cron\""
             _csc_passed=false
             ;;
         *)
-            ui_print "  ❌ 调度模式: 无效值 \"$_csc_schedule_mode\""
-            ui_print "     → 仅支持: sleep 或 cron"
+            ui_print "  ! 调度模式无效: \"$_csc_schedule_mode\""
+            ui_print "    → 仅支持: sleep 或 cron"
             _csc_passed=false
             ;;
     esac
     
     # 检测 CRON_EXP 语法
     if [ -z "$_csc_cron_exp" ]; then
-        ui_print "  ❌ Cron表达式: 未配置"
-        ui_print "     → 请设置 CRON_EXP"
+        ui_print "  ! Cron表达式未配置"
+        ui_print "    → 请设置 CRON_EXP"
         _csc_passed=false
     else
-        if validate_cron_syntax "$_csc_cron_exp" "$_csc_schedule_mode"; then
-            ui_print "  ✅ Cron表达式: $_csc_cron_exp"
-        else
+        if ! validate_cron_syntax "$_csc_cron_exp" "$_csc_schedule_mode"; then
             _csc_passed=false
         fi
+    fi
+    
+    if $_csc_passed; then
+        ui_print "  ✓ 配置语法正确"
     fi
     
     $_csc_passed
@@ -1009,17 +958,8 @@ pre_install_check() {
     _pic_layer_count=$((_pic_layer_count + 1))
     check_kernel_support_advanced || _pic_warn_count=$((_pic_warn_count + 1))
     
-    # Layer 5: 静态文件完整性检测（独立检测）
-    _pic_layer_count=$((_pic_layer_count + 1))
-    if ! check_static_files; then
-        _pic_fail_count=$((_pic_fail_count + 1))
-    fi
-    
-    # Layer 6: 配置语法检测（独立检测）
-    _pic_layer_count=$((_pic_layer_count + 1))
-    if ! check_service_config; then
-        _pic_fail_count=$((_pic_fail_count + 1))
-    fi
+    # 注意: Layer 5-6 (静态文件和配置检测) 已移至解压后执行
+    # 因为在此阶段文件还未解压，检测会失败
     
     # 验证计数器单调性（调试用）
     # 确保计数器只增不减
@@ -1058,41 +998,453 @@ set_permissions() {
 
 
 ##########################################################################################
-# 安装流程集成
+# 配置迁移逻辑
 ##########################################################################################
 
-# 执行安装前检测
-if ! pre_install_check; then
-    ui_print ""
-    ui_print "══════════════════════════"
-    ui_print "⚠️ 兼容性检测未通过，刷入部分功能可能不可用"
-    ui_print ""
-    ui_print "建议操作："
-    ui_print "  1. 确认存在F2FS/EXT4分区"
-    ui_print "  2. 查看上方详细检测结果"
-    ui_print ""
-#    ui_print "如需强制安装，请修改customize.sh"
-    ui_print "══════════════════════════"
-    ui_print ""
+# ============ 配置迁移准备 ============
+
+# 准备配置迁移：检测旧模块、比较版本、提取配置
+prepare_config_migration() {
+    # 检测旧模块路径（多路径尝试）
+    OLD_MODPATH=""
+    for _pcm_path in \
+        "/data/adb/modules/$MODID" \
+        "/data/adb/modules_update/$MODID"; do
+        if [ -d "$_pcm_path" ]; then
+            OLD_MODPATH="$_pcm_path"
+            break
+        fi
+    done
     
-#    abort "❌ 安装已取消 - 设备不兼容"
-fi
+    # 如果没有旧模块，跳过配置迁移
+    if [ -z "$OLD_MODPATH" ]; then
+        ui_print "- 全新安装"
+        return 0
+    fi
+    
+    # 读取新旧版本代码
+    NEW_VERCODE=""
+    OLD_VERCODE=""
+    
+    if [ -f "$TMPDIR/module.prop" ]; then
+        NEW_VERCODE=$(grep '^versionCode=' "$TMPDIR/module.prop" 2>/dev/null | cut -d= -f2 | tr -d '\r\n')
+    fi
+    
+    if [ -f "$OLD_MODPATH/module.prop" ]; then
+        OLD_VERCODE=$(grep '^versionCode=' "$OLD_MODPATH/module.prop" 2>/dev/null | cut -d= -f2 | tr -d '\r\n')
+    fi
+    
+    # 版本判断：仅在版本升级时迁移
+    if [ -z "$NEW_VERCODE" ] || [ -z "$OLD_VERCODE" ]; then
+        return 0
+    fi
+    
+    if [ "$NEW_VERCODE" -le "$OLD_VERCODE" ] 2>/dev/null; then
+        ui_print "- 重新安装（版本未变）"
+        return 0
+    fi
+    
+    # 显示升级信息
+    NEW_VERSION=$(grep '^version=' "$TMPDIR/module.prop" 2>/dev/null | cut -d= -f2 | tr -d '\r\n')
+    OLD_VERSION=$(grep '^version=' "$OLD_MODPATH/module.prop" 2>/dev/null | cut -d= -f2 | tr -d '\r\n')
+    ui_print "- 升级安装: $OLD_VERSION → $NEW_VERSION"
+    
+    # 提取配置到缓存
+    extract_old_config
+}
 
-ui_print ""
-# ui_print "✅ 兼容性检测通过，继续安装..."
-ui_print ""
+# 从旧模块提取配置到缓存文件
+extract_old_config() {
+    CONFIG_CACHE="$TMPDIR/config.cache"
+    : > "$CONFIG_CACHE" 2>/dev/null || return 1
+    
+    # 定义配置参数白名单
+    _eoc_service_params="SCHEDULE_MODE CRON_EXP SLEEP_HEARTBEAT LOG_MODE MAX_LOG_SIZE"
+    _eoc_f2fsopt_params="GC_DIRTY_MIN TRIM_TIMEOUT DEBUG_SCAN SLOW_MOUNT_THRESHOLD VERY_SLOW_THRESHOLD"
+    _eoc_action_params="AUTO_START_WEBUI WEBUI_PROMPT_TIMEOUT"
+    
+    # 提取 service.sh 配置
+    if [ -f "$OLD_MODPATH/service.sh" ]; then
+        for _eoc_param in $_eoc_service_params; do
+            _eoc_value=$(get_config_value "$OLD_MODPATH/service.sh" "$_eoc_param")
+            if [ -n "$_eoc_value" ]; then
+                printf '%s=%s\n' "$_eoc_param" "$_eoc_value" >> "$CONFIG_CACHE"
+            fi
+        done
+    fi
+    
+    # 提取 f2fsopt 配置
+    if [ -f "$OLD_MODPATH/f2fsopt" ]; then
+        for _eoc_param in $_eoc_f2fsopt_params; do
+            _eoc_value=$(get_config_value "$OLD_MODPATH/f2fsopt" "$_eoc_param")
+            if [ -n "$_eoc_value" ]; then
+                printf '%s=%s\n' "$_eoc_param" "$_eoc_value" >> "$CONFIG_CACHE"
+            fi
+        done
+    fi
+    
+    # 提取 action.sh 配置
+    if [ -f "$OLD_MODPATH/action.sh" ]; then
+        for _eoc_param in $_eoc_action_params; do
+            _eoc_value=$(get_config_value "$OLD_MODPATH/action.sh" "$_eoc_param")
+            if [ -n "$_eoc_value" ]; then
+                printf '%s=%s\n' "$_eoc_param" "$_eoc_value" >> "$CONFIG_CACHE"
+            fi
+        done
+    fi
+    
+    return 0
+}
 
-# 注意：配置迁移已移至 update-binary，此处无需执行
-
-ui_print ""
-
-# 您可以添加更多功能来协助您的自定义脚本代码
 
 
+# ============ 模块解压 ============
+
+# 解压模块文件到暂存目录
+extract_module() {
+    STAGING_DIR="$TMPDIR/staging"
+    
+    # 清理并创建暂存目录
+    rm -rf "$STAGING_DIR" 2>/dev/null
+    mkdir -p "$STAGING_DIR" || {
+        ui_print "! 无法创建暂存目录"
+        return 1
+    }
+    
+    # 解压模块文件（排除 META-INF，静默输出）
+    ui_print "- 解压模块文件..."
+    if ! unzip -o "$ZIPFILE" -x 'META-INF/*' -d "$STAGING_DIR" >/dev/null 2>&1; then
+        ui_print "! 解压失败"
+        return 1
+    fi
+    
+    # 设置默认权限
+    set_perm_recursive "$STAGING_DIR" 0 0 0755 0644
+    
+    return 0
+}
 
 
+# ============ 配置应用 ============
+
+# 应用配置迁移
+apply_config_migration() {
+    # 如果没有缓存，跳过
+    [ ! -f "$CONFIG_CACHE" ] && return 0
+    
+    MIGRATED=0
+    
+    ui_print "- 应用配置迁移..."
+    
+    # 批量应用到每个文件
+    _acm_count=$(apply_configs_batch "$STAGING_DIR/service.sh")
+    MIGRATED=$((MIGRATED + _acm_count))
+    
+    _acm_count=$(apply_configs_batch "$STAGING_DIR/f2fsopt")
+    MIGRATED=$((MIGRATED + _acm_count))
+    
+    _acm_count=$(apply_configs_batch "$STAGING_DIR/action.sh")
+    MIGRATED=$((MIGRATED + _acm_count))
+    
+    # 显示结果（仅在有迁移时显示）
+    if [ "$MIGRATED" -gt 0 ]; then
+        ui_print "  ✓ 已迁移 $MIGRATED 项配置"
+    fi
+}
+
+# 批量配置应用函数
+apply_configs_batch() {
+    _acb_file="$1"
+    _acb_tmp="${_acb_file}.tmp"
+    _acb_applied=0
+    _acb_line=""
+    _acb_param=""
+    _acb_new_val=""
+    _acb_replaced=0
+    _acb_prefix=""
+    _acb_old_val=""
+    
+    # 验证目标文件存在
+    if [ ! -f "$_acb_file" ]; then
+        echo "0"
+        return 0
+    fi
+    
+    # 创建临时文件
+    if ! : > "$_acb_tmp" 2>/dev/null; then
+        echo "0"
+        return 0
+    fi
+    
+    # 预加载缓存到内存
+    _acb_cache_content=""
+    if [ -f "$CONFIG_CACHE" ]; then
+        _acb_cache_content=$(cat "$CONFIG_CACHE" 2>/dev/null)
+    fi
+    
+    # 逐行处理文件
+    while IFS= read -r _acb_line || [ -n "$_acb_line" ]; do
+        _acb_replaced=0
+        
+        # 跳过空行和注释行（防止误匹配）
+        case "$_acb_line" in
+            ''|'#'*|' #'*|'	#'*)
+                printf '%s\n' "$_acb_line" >> "$_acb_tmp"
+                continue
+                ;;
+        esac
+        
+        # 精确匹配配置行（仅匹配有效的配置赋值）
+        case "$_acb_line" in
+            readonly\ [A-Z_]*=*|export\ [A-Z_]*=*|[A-Z_]*=*)
+                # 提取参数名（处理 readonly/export 前缀）
+                _acb_prefix=""
+                _acb_param=""
+                
+                case "$_acb_line" in
+                    readonly\ *)
+                        _acb_prefix="readonly "
+                        _acb_param="${_acb_line#readonly }"
+                        _acb_param="${_acb_param%%=*}"
+                        ;;
+                    export\ *)
+                        _acb_prefix="export "
+                        _acb_param="${_acb_line#export }"
+                        _acb_param="${_acb_param%%=*}"
+                        ;;
+                    *)
+                        _acb_prefix=""
+                        _acb_param="${_acb_line%%=*}"
+                        ;;
+                esac
+                
+                # 去除参数名首尾空白
+                while case "$_acb_param" in [' 	']*) true;; *) false;; esac; do
+                    _acb_param="${_acb_param#?}"
+                done
+                while case "$_acb_param" in *[' 	']) true;; *) false;; esac; do
+                    _acb_param="${_acb_param%?}"
+                done
+                
+                # 验证参数名格式（仅大写字母和下划线）
+                case "$_acb_param" in
+                    ''|*[!A-Z_]*)
+                        # 无效参数名，保持原样
+                        printf '%s\n' "$_acb_line" >> "$_acb_tmp"
+                        continue
+                        ;;
+                esac
+                
+                # 从内存缓存中查找新值
+                _acb_new_val=""
+                case "$_acb_cache_content" in
+                    *"${_acb_param}="*)
+                        # 提取匹配行
+                        _acb_cache_line="${_acb_cache_content#*${_acb_param}=}"
+                        _acb_cache_line="${_acb_cache_line%%
+*}"
+                        
+                        # 验证是否为精确匹配（防止部分匹配）
+                        case "$_acb_cache_content" in
+                            *"
+${_acb_param}="*|"${_acb_param}="*)
+                                _acb_new_val="$_acb_cache_line"
+                                ;;
+                        esac
+                        ;;
+                esac
+                
+                if [ -n "$_acb_new_val" ]; then
+                    # 提取原值（用于保留格式）
+                    _acb_old_val="${_acb_line#*=}"
+                    
+                    # 判断原值是否有引号
+                    case "$_acb_old_val" in
+                        \"*\"|\'*\')
+                            # 原值有引号，保留引号格式
+                            case "$_acb_old_val" in
+                                \"*\") printf '%s%s="%s"\n' "$_acb_prefix" "$_acb_param" "$_acb_new_val" >> "$_acb_tmp" ;;
+                                \'*\') printf "%s%s='%s'\n" "$_acb_prefix" "$_acb_param" "$_acb_new_val" >> "$_acb_tmp" ;;
+                            esac
+                            ;;
+                        *)
+                            # 原值无引号，保持无引号格式
+                            printf '%s%s=%s\n' "$_acb_prefix" "$_acb_param" "$_acb_new_val" >> "$_acb_tmp"
+                            ;;
+                    esac
+                    
+                    _acb_applied=$((_acb_applied + 1))
+                    _acb_replaced=1
+                fi
+                ;;
+        esac
+        
+        # 如果未替换，保持原样
+        if [ "$_acb_replaced" = "0" ]; then
+            printf '%s\n' "$_acb_line" >> "$_acb_tmp"
+        fi
+    done < "$_acb_file"
+    
+    # 验证临时文件完整性（根据文件类型设置不同阈值）
+    if [ ! -f "$_acb_tmp" ]; then
+        echo "0"
+        return 0
+    fi
+    
+    _acb_size=$(wc -c < "$_acb_tmp" 2>/dev/null) || _acb_size=0
+    _acb_min_size=1024
+    
+    # 根据文件名设置最小大小阈值
+    case "$_acb_file" in
+        */service.sh) _acb_min_size=10240 ;;  # service.sh 至少 10KB
+        */f2fsopt)    _acb_min_size=10240 ;;  # f2fsopt 至少 10KB
+        */action.sh)  _acb_min_size=5120 ;;   # action.sh 至少 5KB
+        *)            _acb_min_size=1024 ;;   # 其他文件至少 1KB
+    esac
+    
+    if [ "$_acb_size" -lt "$_acb_min_size" ] 2>/dev/null; then
+        rm -f "$_acb_tmp"
+        echo "0"
+        return 0
+    fi
+    
+    # 原子替换
+    if mv "$_acb_tmp" "$_acb_file" 2>/dev/null; then
+        echo "$_acb_applied"
+        return 0
+    else
+        rm -f "$_acb_tmp"
+        echo "0"
+        return 1
+    fi
+}
 
 
+# ============ 最终部署 ============
+
+# 最终部署：验证并移动到最终位置
+finalize_installation() {
+    ui_print "- 验证模块完整性..."
+    
+    # 验证关键文件存在
+    _fi_missing=0
+    for _fi_file in f2fsopt service.sh action.sh webui.sh post-fs-data.sh uninstall.sh; do
+        if [ ! -f "$STAGING_DIR/$_fi_file" ]; then
+            ui_print "  ! 缺失: $_fi_file"
+            _fi_missing=$((_fi_missing + 1))
+        fi
+    done
+    
+    if [ "$_fi_missing" -gt 0 ]; then
+        ui_print "! 缺失 $_fi_missing 个关键文件"
+        return 1
+    fi
+    
+    # 验证 f2fsopt 完整性（大小 + 关键函数）
+    if ! verify_f2fsopt_integrity "$STAGING_DIR/f2fsopt"; then
+        ui_print "! f2fsopt 文件验证失败"
+        return 1
+    fi
+    
+    # 验证 service.sh 大小
+    _fi_size=$(wc -c < "$STAGING_DIR/service.sh" 2>/dev/null) || _fi_size=0
+    if [ "$_fi_size" -lt 10240 ] 2>/dev/null; then
+        ui_print "! service.sh 文件大小异常 ($_fi_size 字节)"
+        return 1
+    fi
+    
+    ui_print "  ✓ 文件完整性验证通过"
+    
+    # 删除旧的 MODPATH
+    rm -rf "$MODPATH" 2>/dev/null
+    
+    # 移动暂存目录到最终位置
+    ui_print "- 部署模块文件..."
+    if ! mv "$STAGING_DIR" "$MODPATH" 2>/dev/null; then
+        ui_print "! 无法移动模块到最终位置"
+        return 1
+    fi
+    
+    # 设置最终权限
+    ui_print "- 设置文件权限..."
+    set_perm_recursive "$MODPATH" 0 0 0755 0644
+    
+    # 设置可执行权限
+    set_perm "$MODPATH/service.sh"      0 0 0755
+    set_perm "$MODPATH/action.sh"       0 0 0755
+    set_perm "$MODPATH/webui.sh"        0 0 0755
+    set_perm "$MODPATH/post-fs-data.sh" 0 0 0755
+    set_perm "$MODPATH/f2fsopt"         0 0 0755
+    set_perm "$MODPATH/uninstall.sh"    0 0 0755
+    
+    ui_print "  ✓ 部署完成"
+    
+    return 0
+}
+
+# ============ 清理 ============
+
+# 清理临时文件
+cleanup_temp_files() {
+    rm -f "$CONFIG_CACHE" 2>/dev/null
+    rm -rf "$STAGING_DIR" 2>/dev/null
+}
 
 
+# ============ 主控制流程 ============
 
+# 主安装流程
+main_install() {
+    # Phase 1: 兼容性检测
+    if ! pre_install_check; then
+        ui_print ""
+        ui_print "══════════════════════════"
+        ui_print "⚠️ 兼容性检测未通过"
+        ui_print "══════════════════════════"
+        ui_print ""
+        abort "❌ 安装已取消 - 设备不兼容"
+    fi
+    
+    # Phase 2: 配置迁移准备
+    prepare_config_migration || {
+        ui_print "  ⚠️ 配置提取失败，将使用默认配置"
+    }
+    
+    # Phase 3: 解压新模块
+    if ! extract_module; then
+        abort "❌ 模块解压失败"
+    fi
+    
+    # Phase 3.5: 配置语法检测
+    check_service_config "$STAGING_DIR" || {
+        ui_print "  ⚠️ 配置语法检测失败，但不影响安装"
+    }
+    
+    # Phase 4: 配置应用
+    apply_config_migration || {
+        ui_print "  ⚠️ 配置应用失败，将使用默认配置"
+        # 重新解压使用默认配置
+        extract_module || abort "❌ 模块解压失败"
+    }
+    
+    # Phase 5: 最终部署
+    if ! finalize_installation; then
+        abort "❌ 模块部署失败"
+    fi
+    
+    # Phase 6: 清理
+    cleanup_temp_files
+    
+    ui_print ""
+    ui_print "════════════════════════════════"
+    ui_print "✅ 模块安装完成"
+    ui_print "════════════════════════════════"
+    ui_print ""
+}
+
+##########################################################################################
+# 执行主安装流程
+##########################################################################################
+
+# 调用主安装函数
+main_install

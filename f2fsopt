@@ -497,20 +497,26 @@ send_notification() {
     # 1. 基础环境检查
     [ "$ENABLE_NOTIFICATIONS" = true ] || return 0
     
-    if ! command -v cmd >/dev/null 2>&1; then
+    # 2. Android 版本检查（cmd notification post 需要 Android 10+）
+    _sn_sdk=$(getprop ro.build.version.sdk 2>/dev/null)
+    case "$_sn_sdk" in *[!0-9]*) _sn_sdk=0 ;; esac
+    if [ "$_sn_sdk" -lt 29 ] 2>/dev/null; then
+        log_msg "[通知] Android 版本过低 (SDK: $_sn_sdk < 29，需要 Android 10+)"
+        return 0
+    fi
+    
+    # 3. 定位 cmd 命令（使用绝对路径，避免 PATH 问题）
+    _sn_cmd_bin=""
+    if [ -x "/system/bin/cmd" ]; then
+        _sn_cmd_bin="/system/bin/cmd"
+    elif command -v cmd >/dev/null 2>&1; then
+        _sn_cmd_bin="cmd"
+    else
         log_msg "[通知] cmd 命令不可用"
         return 0
     fi
     
-    # 2. Android 版本检查（通知功能需要 Android 5.0+）
-    _sn_sdk=$(getprop ro.build.version.sdk 2>/dev/null)
-    case "$_sn_sdk" in *[!0-9]*) _sn_sdk=0 ;; esac
-    if [ "$_sn_sdk" -lt 21 ] 2>/dev/null; then
-        log_msg "[通知] Android 版本过低 (SDK: $_sn_sdk)"
-        return 0
-    fi
-    
-    # 3. 截断过长文本（防止系统拒收）
+    # 4. 截断过长文本（防止系统拒收）
     _sn_date_suffix=" 🕒日期:$(date '+%Y-%m-%d %H:%M:%S')"
     _sn_max_len=$((1024 - ${#_sn_date_suffix}))
     
@@ -522,7 +528,7 @@ send_notification() {
     # 添加日期时间后缀
     _sn_msg="$_sn_msg$_sn_date_suffix"
     
-    # 4. 构造核心命令
+    # 5. 构造核心命令（使用绝对路径）
     # -S bigtext: 展开长文本
     # -t: 标题
     # 不指定 -i (图标): 使用系统默认，避免 invalid icon 错误
@@ -540,31 +546,52 @@ send_notification() {
     done
     _sn_msg_escaped="$_sn_msg_escaped$_sn_rest"
     
-    _sn_core_cmd="cmd notification post -S bigtext -t '$_sn_title' '$_sn_tag' '$_sn_msg_escaped'"
+    _sn_core_cmd="$_sn_cmd_bin notification post -S bigtext -t '$_sn_title' '$_sn_tag' '$_sn_msg_escaped'"
     
-    # 5. 身份切换发送
+    # 6. 身份切换发送
     _sn_ret=1
     
     if [ "$(id -u)" -eq 0 ]; then
-        # Root 环境：尝试切换到 Shell 用户
-        if command -v su >/dev/null 2>&1 && su 2000 -c "true" >/dev/null 2>&1; then
-            # 使用 su 切换身份发送
-            if [ "$HAS_TIMEOUT" = true ]; then
-                $TIMEOUT_CMD 3 su 2000 -c "$_sn_core_cmd" >/dev/null 2>&1
-                _sn_ret=$?
+        # Root 环境：尝试切换到 Shell 用户（Android 7.0+ 推荐）
+        # 注意：部分设备的 su 不支持数字 UID，需要使用用户名
+        if command -v su >/dev/null 2>&1; then
+            # 尝试方案 1: su shell (用户名) - 设置完整 PATH
+            if su shell -c "true" >/dev/null 2>&1; then
+                if [ "$HAS_TIMEOUT" = true ]; then
+                    $TIMEOUT_CMD 3 su shell -c "PATH=/system/bin:\$PATH $_sn_core_cmd" >/dev/null 2>&1
+                    _sn_ret=$?
+                else
+                    su shell -c "PATH=/system/bin:\$PATH $_sn_core_cmd" >/dev/null 2>&1
+                    _sn_ret=$?
+                fi
+                
+                if [ "$_sn_ret" -eq 0 ]; then
+                    log_msg "[通知] 发送成功 (Shell 用户)"
+                    return 0
+                else
+                    log_msg "[通知] Shell 用户发送失败 [退出码: $_sn_ret]"
+                fi
+            # 尝试方案 2: su 2000 (UID) - 设置完整 PATH
+            elif su 2000 -c "true" >/dev/null 2>&1; then
+                if [ "$HAS_TIMEOUT" = true ]; then
+                    $TIMEOUT_CMD 3 su 2000 -c "PATH=/system/bin:\$PATH $_sn_core_cmd" >/dev/null 2>&1
+                    _sn_ret=$?
+                else
+                    su 2000 -c "PATH=/system/bin:\$PATH $_sn_core_cmd" >/dev/null 2>&1
+                    _sn_ret=$?
+                fi
+                
+                if [ "$_sn_ret" -eq 0 ]; then
+                    log_msg "[通知] 发送成功 (UID 2000)"
+                    return 0
+                else
+                    log_msg "[通知] UID 2000 发送失败 [退出码: $_sn_ret]"
+                fi
             else
-                su 2000 -c "$_sn_core_cmd" >/dev/null 2>&1
-                _sn_ret=$?
-            fi
-            
-            if [ "$_sn_ret" -eq 0 ]; then
-                log_msg "[通知] 发送成功 (Shell 身份)"
-                return 0
-            else
-                log_msg "[通知] Shell 身份发送失败 [退出码: $_sn_ret]"
+                log_msg "[通知] 无法切换到 Shell 用户，尝试直接发送"
             fi
         else
-            log_msg "[通知] 无法切换到 Shell 用户，尝试直接发送"
+            log_msg "[通知] su 命令不可用，尝试直接发送"
         fi
         
         # 回退：直接以 Root 身份发送（可能被拦截）
