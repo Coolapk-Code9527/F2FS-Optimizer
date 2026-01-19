@@ -52,12 +52,16 @@ log_msg() {
 BB_PATH=""
 _p=""
 
-# 遍历预定义路径列表
+# 遍历预定义路径列表（包含通配符扫描）
 for _p in \
     "/data/adb/magisk/busybox" \
     "/data/adb/ksu/bin/busybox" \
     "/data/adb/ap/bin/busybox" \
+    /data/adb/*/busybox \
     "/system/bin/busybox"; do
+    
+    # 跳过通配符未展开的情况
+    case "$_p" in *'*'*) continue ;; esac
     
     if [ -x "$_p" ]; then
         BB_PATH="$_p"

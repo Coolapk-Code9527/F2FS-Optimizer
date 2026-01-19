@@ -631,6 +631,9 @@ if [ "$MODE" = "lib" ]; then
         _afcg_ds=$(get_config_value "$MODDIR/f2fsopt" "DEBUG_SCAN")
         _afcg_smt=$(get_config_value "$MODDIR/f2fsopt" "SLOW_MOUNT_THRESHOLD")
         _afcg_vst=$(get_config_value "$MODDIR/f2fsopt" "VERY_SLOW_THRESHOLD")
+        # 高级配置
+        _afcg_emu=$(get_config_value "$MODDIR/f2fsopt" "ENABLE_MAGISK_UI")
+        _afcg_gmp=$(get_config_value "$MODDIR/f2fsopt" "GC_MODE_PREF")
         # 默认值处理
         [ -z "$_afcg_gd" ] && _afcg_gd="200"
         [ -z "$_afcg_gt" ] && _afcg_gt="50"
@@ -648,6 +651,8 @@ if [ "$MODE" = "lib" ]; then
         [ -z "$_afcg_ds" ] && _afcg_ds="1"
         [ -z "$_afcg_smt" ] && _afcg_smt="1000"
         [ -z "$_afcg_vst" ] && _afcg_vst="1500"
+        [ -z "$_afcg_emu" ] && _afcg_emu="true"
+        [ -z "$_afcg_gmp" ] && _afcg_gmp="1"
         # JSON 转义
         _afcg_gd=$(json_escape "$_afcg_gd"); _afcg_gt=$(json_escape "$_afcg_gt")
         _afcg_gs=$(json_escape "$_afcg_gs"); _afcg_gm=$(json_escape "$_afcg_gm")
@@ -658,8 +663,9 @@ if [ "$MODE" = "lib" ]; then
         _afcg_en=$(json_escape "$_afcg_en")
         _afcg_ds=$(json_escape "$_afcg_ds"); _afcg_smt=$(json_escape "$_afcg_smt")
         _afcg_vst=$(json_escape "$_afcg_vst")
-        printf '{"gc_dirty_min":"%s","gc_turbo_sleep":"%s","gc_safe_sleep":"%s","gc_max_sec":"%s","trim_timeout":"%s","stop_on_screen":"%s","only_charging":"%s","gc_stable_cnt":"%s","gc_poll":"%s","enable_smart_gc":"%s","enable_smart_trim":"%s","enable_turbo_gc":"%s","enable_notifications":"%s","debug_scan":"%s","slow_mount_threshold":"%s","very_slow_threshold":"%s"}' \
-            "$_afcg_gd" "$_afcg_gt" "$_afcg_gs" "$_afcg_gm" "$_afcg_tt" "$_afcg_ss" "$_afcg_oc" "$_afcg_sc" "$_afcg_gp" "$_afcg_esg" "$_afcg_est" "$_afcg_etg" "$_afcg_en" "$_afcg_ds" "$_afcg_smt" "$_afcg_vst"
+        _afcg_emu=$(json_escape "$_afcg_emu"); _afcg_gmp=$(json_escape "$_afcg_gmp")
+        printf '{"gc_dirty_min":"%s","gc_turbo_sleep":"%s","gc_safe_sleep":"%s","gc_max_sec":"%s","trim_timeout":"%s","stop_on_screen":"%s","only_charging":"%s","gc_stable_cnt":"%s","gc_poll":"%s","enable_smart_gc":"%s","enable_smart_trim":"%s","enable_turbo_gc":"%s","enable_notifications":"%s","debug_scan":"%s","slow_mount_threshold":"%s","very_slow_threshold":"%s","enable_magisk_ui":"%s","gc_mode_pref":"%s"}' \
+            "$_afcg_gd" "$_afcg_gt" "$_afcg_gs" "$_afcg_gm" "$_afcg_tt" "$_afcg_ss" "$_afcg_oc" "$_afcg_sc" "$_afcg_gp" "$_afcg_esg" "$_afcg_est" "$_afcg_etg" "$_afcg_en" "$_afcg_ds" "$_afcg_smt" "$_afcg_vst" "$_afcg_emu" "$_afcg_gmp"
     }
 
     # 2.4 API: 保存 f2fsopt 配置
@@ -683,6 +689,9 @@ if [ "$MODE" = "lib" ]; then
         _afcs_t="${_afcs_post#*\"debug_scan\":\"}"; [ "$_afcs_t" != "$_afcs_post" ] && _afcs_ds="${_afcs_t%%\"*}" || _afcs_ds=""
         _afcs_t="${_afcs_post#*\"slow_mount_threshold\":\"}"; [ "$_afcs_t" != "$_afcs_post" ] && _afcs_smt="${_afcs_t%%\"*}" || _afcs_smt=""
         _afcs_t="${_afcs_post#*\"very_slow_threshold\":\"}"; [ "$_afcs_t" != "$_afcs_post" ] && _afcs_vst="${_afcs_t%%\"*}" || _afcs_vst=""
+        # 高级配置解析
+        _afcs_t="${_afcs_post#*\"enable_magisk_ui\":\"}"; [ "$_afcs_t" != "$_afcs_post" ] && _afcs_emu="${_afcs_t%%\"*}" || _afcs_emu=""
+        _afcs_t="${_afcs_post#*\"gc_mode_pref\":\"}"; [ "$_afcs_t" != "$_afcs_post" ] && _afcs_gmp="${_afcs_t%%\"*}" || _afcs_gmp=""
         printf 'Content-Type: application/json\r\n\r\n'
         _afcs_ok=true
         _afcs_err=""
@@ -816,6 +825,20 @@ if [ "$MODE" = "lib" ]; then
             else
                 _afcs_ok=false; _afcs_err="very_slow_threshold 必须为 100-30000 之间的数字"
             fi
+        fi
+        # 高级配置写入
+        if [ -n "$_afcs_emu" ]; then
+            if _afcs_is_bool "$_afcs_emu"; then
+                set_config_atomic_fast "$MODDIR/f2fsopt" "ENABLE_MAGISK_UI" "$_afcs_emu" || _afcs_ok=false
+            else
+                _afcs_ok=false; _afcs_err="enable_magisk_ui 必须为 true 或 false"
+            fi
+        fi
+        if [ -n "$_afcs_gmp" ]; then
+            case "$_afcs_gmp" in
+                1|2) set_config_atomic_fast "$MODDIR/f2fsopt" "GC_MODE_PREF" "$_afcs_gmp" || _afcs_ok=false ;;
+                *) _afcs_ok=false; _afcs_err="gc_mode_pref 必须为 1 或 2" ;;
+            esac
         fi
         chmod 755 "$MODDIR/f2fsopt" 2>/dev/null
         if [ "$_afcs_ok" = true ]; then

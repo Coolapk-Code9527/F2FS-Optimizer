@@ -12,10 +12,12 @@
 
 # SYNC: Busybox 探测路径 - 与 f2fsopt 保持一致
 # 更新时请同步修改 f2fsopt 中的路径列表
-readonly BUSYBOX_SEARCH_PATHS="
+# 注意：通配符路径 /data/adb/*/busybox 在运行时动态展开
+BUSYBOX_SEARCH_PATHS="
 /data/adb/magisk/busybox
 /data/adb/ksu/bin/busybox
 /data/adb/ap/bin/busybox
+/data/adb/*/busybox
 /system/bin/busybox
 "
 
@@ -101,7 +103,7 @@ if [ "$__ROLE" != "source" ]; then
 fi
 
 # 1.4 保存当前进程 PID（避免在子 Shell 中误用 $$）
-readonly CURRENT_PID=$$
+CURRENT_PID=$$
 
 # ==============================================================================
 # PART 2: 环境配置与健壮性函数库 (Shared Library)
@@ -153,7 +155,7 @@ export LC_ALL=C
 
 # 声明必需工具
 # 说明: 这些工具会通过 init_command_proxy 自动代理到 Busybox（如果可用）
-readonly REQUIRED_TOOLS="stat readlink mkdir rm sleep date tail pgrep pkill crond tr sed grep tee netstat httpd timeout"
+REQUIRED_TOOLS="stat readlink mkdir rm sleep date tail pgrep pkill crond tr sed grep tee netstat httpd timeout"
 
 init_command_proxy() {
     # 基础检查 - BB_PATH 无效时静默返回失败
@@ -180,6 +182,28 @@ init_command_proxy
 # 2.3 辅助函数 (Robust Utils)
 
 is_integer() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac }
+
+# 安全去除前导零（避免八进制解析和空字符串问题）
+# 用途：处理时间值（如 "08", "09", "00"）确保正确解析为十进制
+# 示例：
+#   "00" → "0"
+#   "08" → "8"
+#   "09" → "9"
+#   "007" → "7"
+#   "123" → "123"
+safe_strip_leading_zeros() {
+    _sslz_val="$1"
+    
+    # 去除所有前导零
+    while case "$_sslz_val" in 0*) true;; *) false;; esac; do
+        _sslz_val="${_sslz_val#0}"
+    done
+    
+    # 如果结果为空（原值为 "0" 或 "00" 等），返回 "0"
+    [ -z "$_sslz_val" ] && _sslz_val="0"
+    
+    printf '%s' "$_sslz_val"
+}
 
 # 读取 /proc/PID/cmdline 并转换 NULL 字节为空格
 read_cmdline() {
@@ -440,21 +464,16 @@ calc_next_target() {
     
     case "$SCHED_TYPE" in
         "interval")
-            _cnt_last=0
-            [ -f "$STATE_FILE" ] && read -r _cnt_last < "$STATE_FILE" 2>/dev/null
-            case "$_cnt_last" in *[!0-9]*) _cnt_last=0 ;; esac
-            [ -z "$_cnt_last" ] && _cnt_last=$_cnt_ts
-            [ "$_cnt_last" -gt "$_cnt_ts" ] 2>/dev/null && _cnt_last=$_cnt_ts
-            
-            # 验证 SCHED_V1 (间隔秒数)
+            # 直接使用当前时间而非 STATE_FILE
             if ! is_integer "$SCHED_V1" || [ "$SCHED_V1" -le 0 ] 2>/dev/null; then
                 [ "$LOG_MODE" != "NONE" ] && log_err "calc_next_target: 无效的间隔值: $SCHED_V1"
                 echo "$_cnt_ts"
                 return 1
             fi
             
-            _cnt_next=$((_cnt_last + SCHED_V1))
-            if [ "$_cnt_next" -le "$_cnt_ts" ] 2>/dev/null; then echo "$((_cnt_ts + 5))"; else echo "$_cnt_next"; fi
+            # 直接返回：当前时间 + 间隔
+            _cnt_next=$((_cnt_ts + SCHED_V1))
+            echo "$_cnt_next"
             ;;
         "align")
             _cnt_step="${SCHED_V1:-2}"
@@ -531,10 +550,10 @@ get_next_run_time() {
     set -- $_gnrt_time_data
     _gnrt_ts="$1"; _gnrt_h="$2"; _gnrt_m="$3"; _gnrt_s="$4"
     
-    # 标准化为整数（去除前导零，避免八进制解析）
-    _gnrt_h="${_gnrt_h#0}"; _gnrt_h="${_gnrt_h#0}"; _gnrt_h="${_gnrt_h:-0}"
-    _gnrt_m="${_gnrt_m#0}"; _gnrt_m="${_gnrt_m#0}"; _gnrt_m="${_gnrt_m:-0}"
-    _gnrt_s="${_gnrt_s#0}"; _gnrt_s="${_gnrt_s#0}"; _gnrt_s="${_gnrt_s:-0}"
+    # 安全去除前导零（修复八进制解析和空字符串问题）
+    _gnrt_h=$(safe_strip_leading_zeros "$_gnrt_h")
+    _gnrt_m=$(safe_strip_leading_zeros "$_gnrt_m")
+    _gnrt_s=$(safe_strip_leading_zeros "$_gnrt_s")
     
     # 解析 Cron 配置（设置 SCHED_TYPE/SCHED_V1/SCHED_V2）
     if ! parse_cron_config; then

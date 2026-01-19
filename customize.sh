@@ -465,7 +465,11 @@ check_dependencies() {
         "/data/adb/magisk/busybox" \
         "/data/adb/ksu/bin/busybox" \
         "/data/adb/ap/bin/busybox" \
+        /data/adb/*/busybox \
         "/system/bin/busybox"; do
+        
+        # 跳过通配符未展开的情况
+        case "$_cd_p" in *'*'*) continue ;; esac
         
         if [ -x "$_cd_p" ]; then
             _cd_bb_path="$_cd_p"
